@@ -30,7 +30,7 @@ jobs:
         run: |
           TODAY="$(TZ=Asia/Shanghai date +%F)"
           STORED="$(node -e "try{const d=require('./data/opgg-data.json');console.log(d.capturedAt+':'+(d.generatorVersion||0))}catch(e){}")"
-          if [ "$STORED" = "$TODAY:2" ]; then
+          if [ "$STORED" = "$TODAY:3" ]; then
             echo "fresh=true" >> "$GITHUB_OUTPUT"
             echo "OPGG data is already current for $TODAY."
           else
