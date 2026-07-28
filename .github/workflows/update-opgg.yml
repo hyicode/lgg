@@ -51,7 +51,7 @@ jobs:
         if: steps.freshness.outputs.fresh != 'true'
         shell: bash
         run: |
-          if git diff --quiet -- data/opgg-data.json; then
+          if [ -z "$(git status --porcelain -- data/opgg-data.json)" ]; then
             echo "No data changes."
             exit 0
           fi
