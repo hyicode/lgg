@@ -4,6 +4,11 @@ on:
   schedule:
     # 00:23 Asia/Shanghai. The script also checks the stored Shanghai date.
     - cron: "23 16 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/update-opgg.yml"
+      - "scripts/update-opgg.mjs"
   workflow_dispatch:
 
 permissions:
