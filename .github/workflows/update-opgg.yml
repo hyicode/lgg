@@ -1,0 +1,62 @@
+name: Update OPGG data
+
+on:
+  schedule:
+    # 00:23 Asia/Shanghai. The script also checks the stored Shanghai date.
+    - cron: "23 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-opgg-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check whether today's data already exists
+        id: freshness
+        shell: bash
+        run: |
+          TODAY="$(TZ=Asia/Shanghai date +%F)"
+          STORED="$(node -e "try{console.log(require('./data/opgg-data.json').capturedAt||'')}catch(e){}")"
+          if [ "$STORED" = "$TODAY" ]; then
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+            echo "OPGG data is already current for $TODAY."
+          else
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install browser
+        if: steps.freshness.outputs.fresh != 'true'
+        run: |
+          npm install --no-save playwright@1.54.1
+          npx playwright install --with-deps chromium
+
+      - name: Fetch Global lane data
+        if: steps.freshness.outputs.fresh != 'true'
+        run: node scripts/update-opgg.mjs
+
+      - name: Commit updated data
+        if: steps.freshness.outputs.fresh != 'true'
+        shell: bash
+        run: |
+          if git diff --quiet -- data/opgg-data.json; then
+            echo "No data changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/opgg-data.json
+          git commit -m "data: update OPGG snapshot $(TZ=Asia/Shanghai date +%F)"
+          git push
