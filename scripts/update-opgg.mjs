@@ -1,7 +1,13 @@
 import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
 
-const lanes = ["top", "jungle", "middle", "bottom", "support"];
+const lanes = [
+  { key: "top", position: "top", sentinel: "mordekaiser" },
+  { key: "jungle", position: "jungle", sentinel: "leesin" },
+  { key: "middle", position: "mid", sentinel: "ahri" },
+  { key: "bottom", position: "adc", sentinel: "ashe" },
+  { key: "support", position: "support", sentinel: "thresh" },
+];
 const today = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
   year: "numeric",
@@ -20,9 +26,9 @@ try {
   const pools = {};
   let patch = "";
 
-  for (const lane of lanes) {
+  for (const { key: lane, position, sentinel } of lanes) {
     const page = await context.newPage();
-    const url = `https://op.gg/zh-cn/lol/champions?region=global&tier=emerald_plus&position=${lane}`;
+    const url = `https://op.gg/zh-cn/lol/champions?region=global&tier=emerald_plus&position=${position}`;
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
     await page.waitForSelector("table tbody tr", { timeout: 60000 });
 
@@ -57,6 +63,9 @@ try {
     if (unique.length < 20) {
       throw new Error(`${lane}: only parsed ${unique.length} champions`);
     }
+    if (!unique.some((hero) => hero.slug === sentinel)) {
+      throw new Error(`${lane}: expected ${sentinel}; the OPGG position filter may not have applied`);
+    }
     pools[lane] = unique;
     console.log(`${lane}: ${unique.length} champions`);
     await page.close();
@@ -64,6 +73,7 @@ try {
 
   const payload = {
     schema: 1,
+    generatorVersion: 2,
     source: "OPGG",
     region: "global",
     tier: "emerald_plus",
