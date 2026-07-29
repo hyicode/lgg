@@ -76,6 +76,25 @@ dialog{width:min(620px,calc(100% - 24px));max-height:calc(100vh - 24px);overflow
 .dialog-head{display:flex;align-items:center;justify-content:space-between;padding:17px 19px;border-bottom:1px solid #203848}.dialog-head h2{margin:0;color:var(--gold2);font:600 23px Georgia}.icon-btn{width:36px;height:36px;padding:0;font-size:22px}
 .dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px;padding:18px}.dialog-grid fieldset{display:flex;gap:16px;margin:0;border:1px solid #294557;border-radius:9px}.dialog-grid fieldset label{display:flex;align-items:center;gap:5px}.dialog-grid .full{grid-column:1/-1}.score-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dialog-actions{display:flex;justify-content:flex-end;gap:9px;padding:14px 18px;border-top:1px solid #203848}.hero-table{margin:0 18px 18px;max-height:65vh}.wide-dialog>.rank-tools{padding:0 18px}
 .collector-box{padding:13px;border:1px solid #294557;border-radius:11px;background:#07131d}.collector-head{display:flex;align-items:center;justify-content:space-between;gap:14px}.collector-head strong,.collector-head small{display:block}.collector-head small{margin-top:4px;color:var(--muted);font-size:12px}.collector-preview{margin-top:12px}.collector-meta{margin-bottom:8px;color:#9fc3d0;font-size:13px}.collector-preview .table-wrap{max-height:280px}.collector-preview th,.collector-preview td{padding:7px 8px;font-size:12px}.collector-preview tr.blue td:first-child{color:#76daf0}.collector-preview tr.red td:first-child{color:#ff8590}
+/* 拖拽匹配 */
+.drop-zone{padding:4px 6px!important;min-width:140px;transition:background .15s}
+.drop-zone.empty{border:1px dashed #294557;border-radius:6px;text-align:center}
+.drop-zone.drag-over{background:#1a3a4a!important;border-color:var(--cyan)!important}
+.drop-hint{color:#445a68;font-size:11px;font-style:italic}
+.matched-chip{display:inline-block;padding:2px 7px;border-radius:4px;background:#163246;color:#cde6f0;font-size:12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+.unmatch-btn{display:inline-block;margin-left:4px;padding:0 4px;border:0;border-radius:3px;background:transparent;color:#6d8da0;font-size:14px;line-height:1;cursor:pointer;vertical-align:middle}.unmatch-btn:hover{color:var(--red);background:#3a1a1f}
+tr.matched .lane,tr.unmatched .lane{color:var(--muted);font-size:11px}
+/* 参与者卡片池 */
+.unmatched-pool{margin-top:10px;padding:10px 12px;border:1px solid #2a4555;border-radius:9px;background:#091821}
+.unmatched-head{margin-bottom:8px;color:var(--muted);font-size:12px}
+.unmatched-cards{display:flex;flex-wrap:wrap;gap:7px}
+.participant-card{display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid #354d5e;border-radius:7px;background:#102838;cursor:grab;user-select:none;transition:box-shadow .15s,transform .15s}
+.participant-card:hover{border-color:var(--cyan);box-shadow:0 0 12px #21c7d930}
+.participant-card.dragging{opacity:.4;transform:scale(.96)}
+.participant-card:active{cursor:grabbing}
+.pc-name{color:#dceef5;font-weight:700;font-size:13px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc-champ{color:var(--gold2);font-size:11px}
+.pc-kda{color:var(--muted);font-size:11px;white-space:nowrap}
 .toast{position:fixed;left:50%;bottom:22px;z-index:110;max-width:min(560px,90vw);padding:10px 16px;border:1px solid #36566a;border-radius:9px;background:#132532;color:#eaf4f7;text-align:center;opacity:0;pointer-events:none;transform:translate(-50%,20px);transition:.25s}.toast.show{opacity:1;transform:translate(-50%,0)}
 @media(max-width:1100px){.battle-layout{grid-template-columns:1fr 1fr;grid-template-areas:"left right" "results results"}.rank-grid,.admin-grid{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:760px){.app{width:min(100% - 18px,620px);padding-top:15px}.hero{align-items:flex-start;flex-direction:column}.main-nav{overflow:auto}.toolbar,.section-head{align-items:flex-start;flex-direction:column}.setup,.results{grid-template-columns:1fr}.summary-grid{grid-template-columns:1fr 1fr}.match-main{grid-template-columns:1fr}.match-team.red{text-align:left}.match-team.red .lineup-mini{justify-content:flex-start}.versus{text-align:left}.inline-form{grid-template-columns:1fr 90px}.inline-form button{grid-column:1/-1}.dialog-grid{grid-template-columns:1fr}.dialog-grid .full{grid-column:auto}.filters{width:100%}.filters>*{flex:1}.card{height:90px}.portrait{width:66px;height:66px;flex-basis:66px}}

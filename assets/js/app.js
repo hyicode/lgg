@@ -35,6 +35,7 @@ const state = {
   draftId: null,
   submitted: false,
   collectedMatch: null,
+  matchedParticipants: new Map(),
   collectorNeedsInstall: false,
   historyPage: 1,
   setupRestored: false,
@@ -65,6 +66,38 @@ function searchForms(value = "") {
   const forms = createSearchForms(key, aliases);
   searchFormCache.set(key, forms);
   return forms;
+}
+
+// ---- 本地选手名 ↔ 游戏账号名 映射 ----
+
+const NAME_MAP_KEY = "lgg-name-map-v1";
+
+function loadNameMappings() {
+  try {
+    const raw = localStorage.getItem(NAME_MAP_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveNameMapping(playerId, accountName) {
+  if (!playerId || !accountName) return;
+  const map = loadNameMappings();
+  map[playerId] = accountName;
+  try {
+    localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
+  } catch { /* quota exceeded, ignore */ }
+}
+
+/** 用历史映射增强 participantScore */
+function matchByName(participant, playerId) {
+  const map = loadNameMappings();
+  const storedName = map[playerId];
+  if (!storedName) return false;
+  const accName = normalizeName(participant.accountName || "");
+  const accBase = accName.split("#")[0];
+  return normalizeName(storedName) === accName || normalizeName(storedName) === accBase;
 }
 
 function fuzzySearch(value, query) {
@@ -515,6 +548,7 @@ function roll() {
     state.draftId = crypto.randomUUID();
     state.submitted = false;
     state.collectedMatch = null;
+    state.matchedParticipants = new Map();
     renderRoll();
     $("#setupSection").classList.add("hidden");
     $("#arena").classList.add("show");
@@ -609,6 +643,7 @@ function rerollHero(index) {
   if (!candidates.length) return toast(`${result.laneLabel}没有可用的新英雄。`);
   result.champion = weightedChoice(candidates);
   state.collectedMatch = null;
+  state.matchedParticipants = new Map();
   fillFront($(`.card[data-index="${index}"]`), result, index);
 }
 
@@ -632,6 +667,7 @@ function resetSetup() {
   $("#sequentialReveal").checked = false;
   $("#rollError").textContent = "";
   state.collectedMatch = null;
+  state.matchedParticipants = new Map();
   localStorage.removeItem("lgg-setup-v3");
   updateCostTotals();
 }
@@ -735,7 +771,21 @@ function downloadCollectorInstaller() {
 }
 
 function collectedByPlayerId() {
-  return new Map((state.collectedMatch?.rows || []).map(({ result, participant }) => [result.player.id, participant]));
+  const result = new Map();
+  if (!state.collectedMatch) return result;
+  const participants = state.collectedMatch.participants;
+  for (const [playerId, match] of state.matchedParticipants) {
+    const p = typeof match === "number" ? participants[match] : match;
+    result.set(playerId, p);
+  }
+  return result;
+}
+
+function getMatchedParticipant(result) {
+  const match = state.matchedParticipants.get(result.player.id);
+  if (match == null) return null;
+  if (typeof match === "number") return state.collectedMatch?.participants?.[match] || null;
+  return match;
 }
 
 function renderCollectedMatch() {
@@ -747,18 +797,77 @@ function renderCollectedMatch() {
     updateCollectorButton();
     return;
   }
+  const participants = collection.participants || [];
   const duration = collection.durationSeconds ? `${Math.round(collection.durationSeconds / 60)} 分钟` : "时长未知";
-  $("#collectorStatus").textContent = `已匹配 ${collection.rows.length} 名选手，请核对后提交。`;
+  const matchedCount = state.matchedParticipants.size;
+  const totalNeeded = state.results.length;
+  $("#collectorStatus").textContent = `已匹配 ${matchedCount} / ${totalNeeded} 名选手，请将未匹配的拖入对应行。`;
   $("#collectorMeta").textContent = `${collection.source} · ${duration}${collection.gameId ? ` · 对局 ${collection.gameId}` : ""}`;
-  $("#collectorBody").innerHTML = collection.rows.map(({ result, participant }) => `
-    <tr class="${result.team}">
-      <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
-      <td><strong>${escapeHtml(result.player.name)}</strong></td>
-      <td>${escapeHtml(participant.accountName || "—")}</td>
-      <td>${escapeHtml(participant.championName || result.champion.name)}</td>
-      <td class="num">${participant.stats.kills} / ${participant.stats.deaths} / ${participant.stats.assists}</td>
-      <td class="num">${participant.stats.creepScore}</td>
-    </tr>`).join("");
+
+  // 已使用的参与者索引
+  const usedIndices = new Set();
+  for (const match of state.matchedParticipants.values()) {
+    if (typeof match === "number") usedIndices.add(match);
+  }
+
+  // 渲染每行（LGG 选手 + 匹配的参与者或空槽）
+  $("#collectorBody").innerHTML = state.results.map((result) => {
+    const p = getMatchedParticipant(result);
+    if (p) {
+      return `
+        <tr class="${result.team} matched" data-player-id="${escapeHtml(result.player.id)}">
+          <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
+          <td><strong>${escapeHtml(result.player.name)}</strong></td>
+          <td class="lane">${escapeHtml(result.laneLabel)}</td>
+          <td class="drop-zone" data-player-id="${escapeHtml(result.player.id)}">
+            <span class="matched-chip">${escapeHtml(p.accountName || "—")}</span>
+            <button class="unmatch-btn" type="button" data-player-id="${escapeHtml(result.player.id)}" title="取消匹配">×</button>
+          </td>
+          <td>${escapeHtml(p.championName || result.champion.name)}</td>
+          <td class="num">${p.stats.kills} / ${p.stats.deaths} / ${p.stats.assists}</td>
+          <td class="num">${p.stats.creepScore}</td>
+        </tr>`;
+    }
+    return `
+      <tr class="${result.team} unmatched" data-player-id="${escapeHtml(result.player.id)}">
+        <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
+        <td><strong>${escapeHtml(result.player.name)}</strong></td>
+        <td class="lane">${escapeHtml(result.laneLabel)}</td>
+        <td class="drop-zone empty" data-player-id="${escapeHtml(result.player.id)}">
+          <span class="drop-hint">⬅ 拖入客户端玩家</span>
+        </td>
+        <td>—</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+      </tr>`;
+  }).join("");
+
+  // 渲染未匹配的参与者卡片池
+  const unmatchedCards = $("#unmatchedCards");
+  const unmatchedParticipants = participants.filter((_, i) => !usedIndices.has(i));
+  const pool = $("#unmatchedPool");
+  if (unmatchedParticipants.length === 0) {
+    pool.classList.add("hidden");
+  } else {
+    pool.classList.remove("hidden");
+    unmatchedCards.innerHTML = unmatchedParticipants.map((p, i) => {
+      const origIdx = participants.indexOf(p);
+      return `
+        <div class="participant-card" draggable="true" data-participant-idx="${origIdx}">
+          <span class="pc-name">${escapeHtml(p.accountName || "未知")}</span>
+          <span class="pc-champ">${escapeHtml(p.championName || "?")}</span>
+          <span class="pc-kda">${p.stats.kills}/${p.stats.deaths}/${p.stats.assists}</span>
+        </div>`;
+    }).join("");
+  }
+
+  // 绑定拖拽事件
+  bindDragEvents();
+  // 绑定取消匹配按钮
+  $$(".unmatch-btn").forEach((btn) => {
+    btn.addEventListener("click", () => unmatchParticipant(btn.dataset.playerId));
+  });
+
   preview.classList.remove("hidden");
   updateCollectorButton();
   if (collection.winner) {
@@ -769,6 +878,76 @@ function renderCollectedMatch() {
     const playedAt = new Date(collection.playedAt);
     if (!Number.isNaN(playedAt.getTime())) $("#playedAt").value = localDateTimeValue(playedAt);
   }
+}
+
+function unmatchParticipant(playerId) {
+  state.matchedParticipants.delete(playerId);
+  renderCollectedMatch();
+}
+
+function bindDragEvents() {
+  // 参与者卡片：拖拽开始
+  $$(".participant-card").forEach((card) => {
+    card.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", card.dataset.participantIdx);
+      e.dataTransfer.effectAllowed = "move";
+      card.classList.add("dragging");
+    });
+    card.addEventListener("dragend", (e) => {
+      card.classList.remove("dragging");
+    });
+  });
+
+  // 放置区域
+  $$(".drop-zone").forEach((zone) => {
+    zone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      zone.classList.add("drag-over");
+    });
+    zone.addEventListener("dragleave", () => {
+      zone.classList.remove("drag-over");
+    });
+    zone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      zone.classList.remove("drag-over");
+      const playerId = zone.dataset.playerId;
+      const participantIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+      if (!Number.isFinite(participantIdx)) return;
+      // 先取消该参与者之前可能已匹配的其他选手
+      for (const [pid, match] of state.matchedParticipants) {
+        if (match === participantIdx) state.matchedParticipants.delete(pid);
+      }
+      state.matchedParticipants.set(playerId, participantIdx);
+      // 记住映射关系，下次自动匹配
+      const p = state.collectedMatch?.participants?.[participantIdx];
+      if (p?.accountName) saveNameMapping(playerId, p.accountName);
+      renderCollectedMatch();
+    });
+  });
+
+  // 也允许放到整行上
+  $$("#collectorBody tr").forEach((row) => {
+    if (row.querySelector(".drop-zone")) return; // 由 drop-zone 处理
+    row.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    });
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const playerId = row.dataset.playerId;
+      if (!playerId) return;
+      const participantIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+      if (!Number.isFinite(participantIdx)) return;
+      for (const [pid, match] of state.matchedParticipants) {
+        if (match === participantIdx) state.matchedParticipants.delete(pid);
+      }
+      state.matchedParticipants.set(playerId, participantIdx);
+      const p = state.collectedMatch?.participants?.[participantIdx];
+      if (p?.accountName) saveNameMapping(playerId, p.accountName);
+      renderCollectedMatch();
+    });
+  });
 }
 
 async function collectMatchData() {
@@ -785,6 +964,7 @@ async function collectMatchData() {
     if (!await collectorIsRunning()) {
       if (!await tryStartCollector()) {
         state.collectedMatch = null;
+        state.matchedParticipants = new Map();
         state.collectorNeedsInstall = true;
         renderCollectedMatch();
         $("#collectorStatus").textContent = "未能唤起采集器。";
@@ -798,15 +978,41 @@ async function collectMatchData() {
     if (!Array.isArray(collected.participants) || collected.participants.length < 10) {
       throw new Error("采集到的玩家不足 10 人，请确认读取的是完整的召唤师峡谷对局。");
     }
-    const mapping = matchCollectedParticipants(state.results, collected.participants);
-    if (mapping.unmatched.length || mapping.rows.length !== 10) {
-      const names = mapping.unmatched.map((result) => result.player.name).join("、");
-      throw new Error(`采集数据与当前 Roll 结果不一致，未匹配选手：${names || "未知"}。`);
+    state.collectedMatch = collected;
+    // 自动匹配：先用历史映射，再用 score 匹配
+    const nameMap = loadNameMappings();
+    const participants = collected.participants;
+    state.matchedParticipants = new Map();
+    const used = new Set();
+    // 第一轮：历史名字映射精准匹配
+    for (const result of state.results) {
+      const storedName = nameMap[result.player.id];
+      if (!storedName) continue;
+      const found = participants.findIndex((p, i) =>
+        !used.has(i) && normalizeName(p.accountName || "").startsWith(normalizeName(storedName))
+      );
+      if (found >= 0) {
+        state.matchedParticipants.set(result.player.id, found);
+        used.add(found);
+      }
     }
-    state.collectedMatch = { ...collected, rows: mapping.rows };
+    // 第二轮：用 score 匹配剩余
+    const unmatchedResults = state.results.filter((r) => !state.matchedParticipants.has(r.player.id));
+    const remainingParticipants = participants.filter((_, i) => !used.has(i));
+    if (unmatchedResults.length && remainingParticipants.length) {
+      const mapping = matchCollectedParticipants(unmatchedResults, remainingParticipants);
+      for (const { result, participant } of mapping.rows) {
+        const pIdx = participants.indexOf(participant);
+        if (pIdx >= 0) {
+          state.matchedParticipants.set(result.player.id, pIdx);
+          saveNameMapping(result.player.id, participant.accountName);
+        }
+      }
+    }
     renderCollectedMatch();
   } catch (caught) {
     state.collectedMatch = null;
+    state.matchedParticipants = new Map();
     renderCollectedMatch();
     const bridgeHint = caught instanceof TypeError || caught.name === "TimeoutError"
       ? "采集器连接中断，请重新启动后再试。"
