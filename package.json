@@ -1,0 +1,10 @@
+{
+  "name": "lgg",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/stats.test.mjs",
+    "validate": "node scripts/validate-site.mjs",
+    "check": "npm run validate && npm test"
+  }
+}
