@@ -1,0 +1,4 @@
+collector/config.json
+.collector-bridge*.log
+.local-web*.log
+.idea/

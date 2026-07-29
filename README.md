@@ -20,3 +20,10 @@
 - `SUPABASE_SETUP.md`：Supabase 维护与恢复说明。
 - `data/opgg-data.json`：GitHub Actions 每日生成的分路数据。
 - `scripts/update-opgg.mjs`：OPGG 数据抓取器。
+- `collector/`：Windows 本机采集桥，让网页在用户确认前读取并预览客户端对局数据。
+
+## 对局采集器
+
+先双击 `collector/start-collector.cmd` 启动本机桥接服务，再在“记录正式比赛”
+弹窗中点击“采集数据”。网页会展示双方、英雄、KDA、补刀和胜方，用户确认后
+才会提交到 Supabase。详细说明见 `collector/README.md`。

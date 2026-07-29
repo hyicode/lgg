@@ -1,6 +1,7 @@
 import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
 import { createSearchForms, fuzzyMatches } from "./search-core.js";
+import { matchCollectedParticipants } from "./collector-core.js";
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm";
 import { pinyin } from "https://cdn.jsdelivr.net/npm/pinyin-pro@3.28.2/+esm";
 
@@ -15,7 +16,7 @@ const LANES = [
 ];
 const CACHE_SCHEMA = 10;
 const HISTORY_PAGE_SIZE = 20;
-const PLAYER_SUGGESTION_LIMIT = 8;
+const COLLECTOR_URL = "http://127.0.0.1:32145";
 const searchFormCache = new Map();
 
 const state = {
@@ -33,6 +34,8 @@ const state = {
   busy: false,
   draftId: null,
   submitted: false,
+  collectedMatch: null,
+  collectorNeedsInstall: false,
   historyPage: 1,
   setupRestored: false,
   realtimeChannel: null,
@@ -165,8 +168,7 @@ function matchingPlayers(query) {
   return activePlayers()
     .filter((player) => !selectedIds.has(player.id))
     .filter((player) => !query || fuzzySearch(player.displayName, query))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"))
-    .slice(0, PLAYER_SUGGESTION_LIMIT);
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"));
 }
 
 function renderPlayerSuggestions(input) {
@@ -203,16 +205,6 @@ function movePlayerSuggestion(input, direction) {
   options.forEach((option, index) => option.classList.toggle("active", index === next));
   input.dataset.suggestionIndex = String(next);
   options[next].scrollIntoView({ block: "nearest" });
-}
-
-function renderPlayerOptions() {
-  for (const select of ["#submitterPlayer", "#editSubmitterPlayer"]) {
-    const current = $(select).value;
-    $(select).innerHTML = `<option value="">请选择</option>${activePlayers()
-      .map((player) => `<option value="${player.id}">${escapeHtml(player.displayName)}</option>`)
-      .join("")}`;
-    if (playerById(current)?.active) $(select).value = current;
-  }
 }
 
 function syncPlayerInput(input, updateCost = true) {
@@ -426,7 +418,10 @@ async function enrichTencentPortraits() {
     for (const pool of Object.values(state.pools)) {
       for (const champion of pool) {
         const hero = byAlias.get(champion.slug.toLowerCase());
-        if (hero) champion.image = `https://game.gtimg.cn/images/lol/act/img/champion/${encodeURIComponent(hero.alias)}.png`;
+        if (hero) {
+          champion.id = Number(hero.heroId || hero.id || 0);
+          champion.image = `https://game.gtimg.cn/images/lol/act/img/champion/${encodeURIComponent(hero.alias)}.png`;
+        }
       }
     }
   } catch {
@@ -519,6 +514,7 @@ function roll() {
     state.revealed = 0;
     state.draftId = crypto.randomUUID();
     state.submitted = false;
+    state.collectedMatch = null;
     renderRoll();
     $("#setupSection").classList.add("hidden");
     $("#arena").classList.add("show");
@@ -612,6 +608,7 @@ function rerollHero(index) {
   const candidates = state.pools[result.lane].filter((hero) => !blocked.has(hero.slug));
   if (!candidates.length) return toast(`${result.laneLabel}没有可用的新英雄。`);
   result.champion = weightedChoice(candidates);
+  state.collectedMatch = null;
   fillFront($(`.card[data-index="${index}"]`), result, index);
 }
 
@@ -634,13 +631,9 @@ function resetSetup() {
   $("#uniqueHeroes").checked = false;
   $("#sequentialReveal").checked = false;
   $("#rollError").textContent = "";
+  state.collectedMatch = null;
   localStorage.removeItem("lgg-setup-v3");
   updateCostTotals();
-}
-
-function populateSubmitters(select, selected = "") {
-  select.innerHTML = `<option value="">请选择</option>${activePlayers().map((player) => `<option value="${player.id}">${escapeHtml(player.displayName)}</option>`).join("")}`;
-  select.value = selected;
 }
 
 function openRecordDialog() {
@@ -648,24 +641,190 @@ function openRecordDialog() {
   $("#recordForm").reset();
   $("#recordError").textContent = "";
   $("#playedAt").value = localDateTimeValue();
-  populateSubmitters($("#submitterPlayer"));
+  renderCollectedMatch();
   $("#recordDialog").showModal();
+  refreshCollectorConnection();
 }
 
-function scoreFromInputs(blueInput, redInput) {
-  const blueRaw = blueInput.value.trim();
-  const redRaw = redInput.value.trim();
-  if ((blueRaw && !redRaw) || (!blueRaw && redRaw)) throw new Error("比分需要同时填写蓝方和红方，或同时留空。");
-  if (!blueRaw) return { blue: null, red: null };
-  const blue = Number(blueRaw);
-  const red = Number(redRaw);
-  if (!Number.isInteger(blue) || !Number.isInteger(red) || blue < 0 || red < 0) throw new Error("比分必须是非负整数。");
-  return { blue, red };
+async function collectorRequest(path, timeout = 2500) {
+  const response = await fetch(`${COLLECTOR_URL}${path}`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(timeout),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `采集桥返回 HTTP ${response.status}`);
+  return data;
+}
+
+async function collectorIsRunning() {
+  try {
+    const health = await collectorRequest("/health", 1500);
+    return health.ok === true && health.service === "LGG Collector Bridge";
+  } catch {
+    return false;
+  }
+}
+
+function updateCollectorButton() {
+  $("#collectMatchBtn").textContent = state.collectorNeedsInstall
+    ? "下载安装采集器"
+    : (state.collectedMatch ? "重新采集" : "采集数据");
+}
+
+async function refreshCollectorConnection() {
+  if (await collectorIsRunning()) {
+    state.collectorNeedsInstall = false;
+    updateCollectorButton();
+    if (!state.collectedMatch) $("#collectorStatus").textContent = "采集器已连接，可以读取客户端数据。";
+    return true;
+  }
+  if (!state.collectedMatch) $("#collectorStatus").textContent = "采集器未运行；点击采集数据会自动尝试唤起。";
+  return false;
+}
+
+async function tryStartCollector() {
+  $("#collectorStatus").textContent = "正在唤起采集器…";
+  window.location.href = "lggcollector://start";
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (await collectorIsRunning()) {
+      state.collectorNeedsInstall = false;
+      return true;
+    }
+  }
+  return false;
+}
+
+function downloadCollectorInstaller() {
+  const sourceBase = new URL("./collector/", window.location.href).href.replace(/\/$/, "");
+  const installer = [
+    "@echo off",
+    "chcp 65001 >nul",
+    "title LGG Collector Installer",
+    "echo 正在准备 LGG 采集器安装程序...",
+    "set \"INSTALLER=%TEMP%\\LGGCollector-Install.ps1\"",
+    `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -UseBasicParsing '${sourceBase}/install-collector.ps1' -OutFile '%INSTALLER%'"`,
+    "if errorlevel 1 (",
+    "  echo.",
+    "  echo 安装程序下载失败，请检查网络后重试。",
+    "  pause",
+    "  exit /b 1",
+    ")",
+    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%INSTALLER%" -SourceBase "${sourceBase}"`,
+    "if errorlevel 1 (",
+    "  echo.",
+    "  echo 安装失败，请保留窗口中的错误信息。",
+    "  pause",
+    "  exit /b 1",
+    ")",
+    "echo.",
+    "pause",
+    "",
+  ].join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([installer], { type: "application/octet-stream" }));
+  link.download = "LGG-Collector-Setup.cmd";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  state.collectorNeedsInstall = false;
+  updateCollectorButton();
+  $("#collectorStatus").textContent = "请运行下载的安装器；安装完成后再次点击采集数据。";
+  $("#recordError").textContent = "";
+}
+
+function collectedByPlayerId() {
+  return new Map((state.collectedMatch?.rows || []).map(({ result, participant }) => [result.player.id, participant]));
+}
+
+function renderCollectedMatch() {
+  const collection = state.collectedMatch;
+  const preview = $("#collectorPreview");
+  if (!collection) {
+    preview.classList.add("hidden");
+    $("#collectorStatus").textContent = "启动本机采集桥后即可读取赛后数据。";
+    updateCollectorButton();
+    return;
+  }
+  const duration = collection.durationSeconds ? `${Math.round(collection.durationSeconds / 60)} 分钟` : "时长未知";
+  $("#collectorStatus").textContent = `已匹配 ${collection.rows.length} 名选手，请核对后提交。`;
+  $("#collectorMeta").textContent = `${collection.source} · ${duration}${collection.gameId ? ` · 对局 ${collection.gameId}` : ""}`;
+  $("#collectorBody").innerHTML = collection.rows.map(({ result, participant }) => `
+    <tr class="${result.team}">
+      <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
+      <td><strong>${escapeHtml(result.player.name)}</strong></td>
+      <td>${escapeHtml(participant.accountName || "—")}</td>
+      <td>${escapeHtml(participant.championName || result.champion.name)}</td>
+      <td class="num">${participant.stats.kills} / ${participant.stats.deaths} / ${participant.stats.assists}</td>
+      <td class="num">${participant.stats.creepScore}</td>
+    </tr>`).join("");
+  preview.classList.remove("hidden");
+  updateCollectorButton();
+  if (collection.winner) {
+    const winnerInput = $(`input[name="winner"][value="${collection.winner}"]`);
+    if (winnerInput) winnerInput.checked = true;
+  }
+  if (collection.playedAt) {
+    const playedAt = new Date(collection.playedAt);
+    if (!Number.isNaN(playedAt.getTime())) $("#playedAt").value = localDateTimeValue(playedAt);
+  }
+}
+
+async function collectMatchData() {
+  const button = $("#collectMatchBtn");
+  const error = $("#recordError");
+  if (state.collectorNeedsInstall) {
+    downloadCollectorInstaller();
+    return;
+  }
+  button.disabled = true;
+  error.textContent = "";
+  $("#collectorStatus").textContent = "正在读取英雄联盟客户端…";
+  try {
+    if (!await collectorIsRunning()) {
+      if (!await tryStartCollector()) {
+        state.collectedMatch = null;
+        state.collectorNeedsInstall = true;
+        renderCollectedMatch();
+        $("#collectorStatus").textContent = "未能唤起采集器。";
+        error.textContent = "可能尚未安装，或浏览器阻止了外部应用。点击同一按钮下载安装。";
+        return;
+      }
+    }
+    state.collectorNeedsInstall = false;
+    $("#collectorStatus").textContent = "采集器已启动，正在读取英雄联盟客户端…";
+    const collected = await collectorRequest("/collect", 12_000);
+    if (!Array.isArray(collected.participants) || collected.participants.length < 10) {
+      throw new Error("采集到的玩家不足 10 人，请确认读取的是完整的召唤师峡谷对局。");
+    }
+    const mapping = matchCollectedParticipants(state.results, collected.participants);
+    if (mapping.unmatched.length || mapping.rows.length !== 10) {
+      const names = mapping.unmatched.map((result) => result.player.name).join("、");
+      throw new Error(`采集数据与当前 Roll 结果不一致，未匹配选手：${names || "未知"}。`);
+    }
+    state.collectedMatch = { ...collected, rows: mapping.rows };
+    renderCollectedMatch();
+  } catch (caught) {
+    state.collectedMatch = null;
+    renderCollectedMatch();
+    const bridgeHint = caught instanceof TypeError || caught.name === "TimeoutError"
+      ? "采集器连接中断，请重新启动后再试。"
+      : caught.message;
+    error.textContent = bridgeHint;
+    if (!await collectorIsRunning()) {
+      state.collectorNeedsInstall = true;
+      updateCollectorButton();
+    }
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function matchSnapshot() {
   const blue = state.results.filter((result) => result.team === "blue");
   const red = state.results.filter((result) => result.team === "red");
+  const collected = collectedByPlayerId();
   return {
     teams: {
       blueName: $("#blueName").value.trim(),
@@ -673,20 +832,25 @@ function matchSnapshot() {
       blueTotalCost: blue.reduce((sum, result) => sum + result.player.cost, 0),
       redTotalCost: red.reduce((sum, result) => sum + result.player.cost, 0),
     },
-    lineup: state.results.map((result) => ({
-      team: result.team,
-      playerId: result.player.id,
-      playerName: result.player.name,
-      cost: result.player.cost,
-      lane: result.lane,
-      laneLabel: result.laneLabel,
-      champion: {
-        slug: result.champion.slug,
-        name: result.champion.name,
-        weight: Number(result.champion.weight),
-        banRate: Number(result.champion.banRate),
-      },
-    })),
+    lineup: state.results.map((result) => {
+      const participant = collected.get(result.player.id);
+      return {
+        team: result.team,
+        playerId: result.player.id,
+        playerName: result.player.name,
+        accountName: participant?.accountName || "",
+        cost: result.player.cost,
+        lane: result.lane,
+        laneLabel: result.laneLabel,
+        champion: {
+          slug: result.champion.slug,
+          name: result.champion.name,
+          weight: Number(result.champion.weight),
+          banRate: Number(result.champion.banRate),
+        },
+        ...(participant ? { stats: participant.stats } : {}),
+      };
+    }),
     bans: state.bans.map((hero) => ({ slug: hero.slug, name: hero.name, banRate: Number(hero.banRate) })),
   };
 }
@@ -699,21 +863,16 @@ async function submitMatch(event) {
   try {
     const winner = new FormData($("#recordForm")).get("winner");
     if (!winner) throw new Error("请选择胜方。");
-    const submitter = playerById($("#submitterPlayer").value);
-    if (!submitter?.active) throw new Error("请选择实际记录人。");
     const playedAt = new Date($("#playedAt").value);
     if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
-    const score = scoreFromInputs($("#blueScore"), $("#redScore"));
     const snapshot = matchSnapshot();
     const payload = {
       id: state.draftId,
-      schema_version: 1,
+      schema_version: state.collectedMatch ? 2 : 1,
       played_at: playedAt.toISOString(),
       created_by: state.user.id,
-      submitted_by_player_id: submitter.id,
-      submitted_by_name: submitter.displayName,
       winner,
-      score,
+      score: { blue: null, red: null },
       note: $("#matchNote").value.trim(),
       teams: snapshot.teams,
       lineup: snapshot.lineup,
@@ -721,6 +880,15 @@ async function submitMatch(event) {
       options: {
         uniqueHeroes: $("#uniqueHeroes").checked,
         sequentialReveal: $("#sequentialReveal").checked,
+        ...(state.collectedMatch ? {
+          collector: {
+            source: state.collectedMatch.source,
+            gameId: state.collectedMatch.gameId,
+            collectedAt: state.collectedMatch.collectedAt,
+            durationSeconds: state.collectedMatch.durationSeconds,
+            gameMode: state.collectedMatch.gameMode,
+          },
+        } : {}),
       },
       data_version: {
         source: state.poolMeta?.source || "OPGG",
@@ -789,7 +957,7 @@ function matchCard(match, includeActions = true) {
         </div>
       </div>
       <div class="match-meta">
-        <span>记录人：${escapeHtml(match.submittedByName || "—")}</span>
+        ${match.submittedByName ? `<span>记录人：${escapeHtml(match.submittedByName)}</span>` : ""}
         <span>版本：${escapeHtml(match.dataVersion?.patch || "未知")}</span>
         ${match.note ? `<span class="note">${escapeHtml(match.note)}</span>` : ""}
         ${includeActions && isAdmin() ? `<span class="match-actions"><button class="mini" data-edit-match="${match.id}">修正</button><button class="mini danger" data-delete-match="${match.id}">删除</button></span>` : ""}
@@ -954,10 +1122,7 @@ function openEditMatch(id) {
   $("#editMatchForm").reset();
   $("#editMatchId").value = id;
   $(`input[name="editWinner"][value="${match.winner}"]`).checked = true;
-  populateSubmitters($("#editSubmitterPlayer"), match.submittedByPlayerId);
   $("#editPlayedAt").value = localDateTimeValue(asDate(match.playedAt));
-  $("#editBlueScore").value = Number.isInteger(match.score?.blue) ? match.score.blue : "";
-  $("#editRedScore").value = Number.isInteger(match.score?.red) ? match.score.red : "";
   $("#editMatchNote").value = match.note || "";
   $("#editMatchError").textContent = "";
   $("#editMatchDialog").showModal();
@@ -970,17 +1135,12 @@ async function saveMatchEdit(event) {
   const button = $("#saveMatchBtn");
   try {
     const winner = new FormData($("#editMatchForm")).get("editWinner");
-    const submitter = playerById($("#editSubmitterPlayer").value);
     const playedAt = new Date($("#editPlayedAt").value);
-    if (!winner || !submitter || Number.isNaN(playedAt.getTime())) throw new Error("请完整填写胜方、记录人和比赛时间。");
-    const score = scoreFromInputs($("#editBlueScore"), $("#editRedScore"));
+    if (!winner || Number.isNaN(playedAt.getTime())) throw new Error("请完整填写胜方和比赛时间。");
     button.disabled = true;
     const { error: updateError } = await state.supabase.from("matches").update({
       winner,
-      submitted_by_player_id: submitter.id,
-      submitted_by_name: submitter.displayName,
       played_at: playedAt.toISOString(),
-      score,
       note: $("#editMatchNote").value.trim(),
     }).eq("id", $("#editMatchId").value);
     if (updateError) throw updateError;
@@ -1055,7 +1215,6 @@ async function refreshPlayers() {
     return;
   }
   state.players = (data || []).map(mapPlayer);
-  renderPlayerOptions();
   restoreLocalSetup();
   renderAllSharedData();
 }
@@ -1207,9 +1366,13 @@ function bindEvents() {
   $("#backBtn").addEventListener("click", backToSetup);
   $("#againBtn").addEventListener("click", roll);
   $("#recordBtn").addEventListener("click", openRecordDialog);
+  $("#collectMatchBtn").addEventListener("click", collectMatchData);
   $("#resetBtn").addEventListener("click", resetSetup);
   $("#recordForm").addEventListener("submit", submitMatch);
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
+  $$("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", () => button.closest("dialog").close());
+  });
   $("#playerForm").addEventListener("submit", addPlayer);
   $("#results").addEventListener("click", (event) => {
     const button = event.target.closest("[data-reroll]");

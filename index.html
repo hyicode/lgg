@@ -144,33 +144,44 @@
   </main>
 
   <dialog id="recordDialog">
-    <form method="dialog" id="recordForm">
-      <div class="dialog-head"><h2>记录正式比赛</h2><button class="icon-btn" value="cancel" aria-label="关闭">×</button></div>
+    <form id="recordForm">
+      <div class="dialog-head"><h2>记录正式比赛</h2><button class="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button></div>
       <div class="dialog-grid">
+        <section class="collector-box full">
+          <div class="collector-head">
+            <div><strong>客户端对局数据</strong><small id="collectorStatus">启动本机采集桥后即可读取赛后数据。</small></div>
+            <button class="ghost" id="collectMatchBtn" type="button">采集数据</button>
+          </div>
+          <div class="collector-preview hidden" id="collectorPreview">
+            <div class="collector-meta" id="collectorMeta"></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>队伍</th><th>LGG 选手</th><th>客户端账号</th><th>英雄</th><th>K / D / A</th><th>补刀</th></tr></thead>
+                <tbody id="collectorBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
         <fieldset><legend>胜方（必填）</legend><label><input type="radio" name="winner" value="blue" required> 蓝方</label><label><input type="radio" name="winner" value="red"> 红方</label></fieldset>
-        <label>实际记录人<select id="submitterPlayer" required></select></label>
         <label>比赛时间<input id="playedAt" type="datetime-local" required></label>
-        <div class="score-row"><label>蓝方比分<input id="blueScore" type="number" min="0"></label><label>红方比分<input id="redScore" type="number" min="0"></label></div>
         <label class="full">备注<textarea id="matchNote" maxlength="500" rows="3" placeholder="可选"></textarea></label>
       </div>
       <div class="form-error" id="recordError" role="alert"></div>
-      <div class="dialog-actions"><button class="ghost" value="cancel">取消</button><button class="primary" id="submitMatchBtn" value="default">确认提交</button></div>
+      <div class="dialog-actions"><button class="ghost" type="button" data-close-dialog>取消</button><button class="primary" id="submitMatchBtn" type="submit">确认提交</button></div>
     </form>
   </dialog>
 
   <dialog id="editMatchDialog">
-    <form method="dialog" id="editMatchForm">
-      <div class="dialog-head"><h2>修正比赛结果</h2><button class="icon-btn" value="cancel" aria-label="关闭">×</button></div>
+    <form id="editMatchForm">
+      <div class="dialog-head"><h2>修正比赛结果</h2><button class="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button></div>
       <input id="editMatchId" type="hidden">
       <div class="dialog-grid">
         <fieldset><legend>胜方</legend><label><input type="radio" name="editWinner" value="blue" required> 蓝方</label><label><input type="radio" name="editWinner" value="red"> 红方</label></fieldset>
-        <label>实际记录人<select id="editSubmitterPlayer" required></select></label>
         <label>比赛时间<input id="editPlayedAt" type="datetime-local" required></label>
-        <div class="score-row"><label>蓝方比分<input id="editBlueScore" type="number" min="0"></label><label>红方比分<input id="editRedScore" type="number" min="0"></label></div>
         <label class="full">备注<textarea id="editMatchNote" maxlength="500" rows="3"></textarea></label>
       </div>
       <div class="form-error" id="editMatchError" role="alert"></div>
-      <div class="dialog-actions"><button class="ghost" value="cancel">取消</button><button class="primary" id="saveMatchBtn" value="default">保存修改</button></div>
+      <div class="dialog-actions"><button class="ghost" type="button" data-close-dialog>取消</button><button class="primary" id="saveMatchBtn" type="submit">保存修改</button></div>
     </form>
   </dialog>
 
