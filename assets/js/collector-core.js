@@ -2,7 +2,7 @@ function normalize(value = "") {
   return String(value).normalize("NFKC").trim().toLocaleLowerCase("zh-CN").replace(/\s+/g, " ");
 }
 
-function championSlug(value = "") {
+export function championSlug(value = "") {
   return String(value).normalize("NFKD").replace(/[^a-z0-9]/gi, "").toLowerCase();
 }
 

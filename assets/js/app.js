@@ -1643,8 +1643,8 @@ async function login(event) {
       password: $("#loginPassword").value,
     });
     if (signInError) throw signInError;
-  } catch {
-    error.textContent = "账号或密码不正确。";
+  } catch (caught) {
+    error.textContent = caught?.message || caught?.error_description || "账号或密码不正确。";
   } finally {
     button.disabled = false;
   }
