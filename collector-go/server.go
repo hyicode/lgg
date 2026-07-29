@@ -101,6 +101,18 @@ func (cs *CollectorServer) handleRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 最近对局列表
+	if r.Method == "GET" && r.URL.Path == "/recent-games" {
+		count := 20
+		games, err := collectRecentGames(count)
+		if err != nil {
+			writeJSON(w, 503, ErrorResponse{Error: err.Error()}, origin)
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"games": games}, origin)
+		return
+	}
+
 	// 404
 	writeJSON(w, 404, ErrorResponse{Error: "Not found"}, origin)
 }

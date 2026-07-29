@@ -98,3 +98,87 @@ func collectFromLeagueClient() (*MatchData, error) {
 
 	return nil, fmt.Errorf("无法取得完整对局。%s", strings.Join(errors, "；"))
 }
+
+// RecentGameSummary 最近对局摘要
+type RecentGameSummary struct {
+	GameID          string        `json:"gameId"`
+	PlayedAt        string        `json:"playedAt"`
+	DurationSeconds int           `json:"durationSeconds"`
+	GameMode        string        `json:"gameMode"`
+	GameType        string        `json:"gameType"`
+	QueueID         int           `json:"queueId"`
+	Participants    []Participant `json:"participants"`
+}
+
+// collectRecentGames 获取最近 N 场对局摘要
+func collectRecentGames(count int) ([]RecentGameSummary, error) {
+	client, err := discoverLeagueClient()
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=%d", count)
+	history, err := lcuGet(client, url)
+	if err != nil {
+		return nil, fmt.Errorf("获取对局列表失败：%s", err.Error())
+	}
+
+	games := getMap(history, "games")
+	if games == nil {
+		return nil, fmt.Errorf("对局列表为空")
+	}
+	gameList := getSlice(games, "games")
+
+	var result []RecentGameSummary
+	for _, g := range gameList {
+		gm, ok := g.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// 只返回自定义对局
+		gameType := getString(gm, "gameType")
+		if gameType != "CUSTOM_GAME" && gameType != "PRACTICE_GAME" {
+			continue
+		}
+
+		gameID := firstStr(
+			getString(gm, "gameId"),
+			asString(gm["id"]),
+		)
+
+		rawParticipants := participantSources(history, gm)
+		var participants []Participant
+		for _, p := range rawParticipants {
+			participants = append(participants, normalizeParticipant(p))
+		}
+		// 去重
+		var unique []Participant
+		seen := make(map[string]bool)
+		for i, p := range participants {
+			key := fmt.Sprintf("%s|%s|%d|%s", p.AccountName, p.Team, p.ChampionID, p.ChampionSlug)
+			if p.AccountName == "未知玩家" {
+				key = fmt.Sprintf("%s|%s|%d", key, p.Position, i)
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			unique = append(unique, p)
+		}
+
+		result = append(result, RecentGameSummary{
+			GameID:          gameID,
+			PlayedAt:        normalizePlayedAt(gm),
+			DurationSeconds: firstInt(getInt(gm, "gameDuration"), getInt(gm, "gameLength")),
+			GameMode:        getString(gm, "gameMode"),
+			GameType:        gameType,
+			QueueID:         getInt(gm, "queueId"),
+			Participants:    unique,
+		})
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("没有找到自定义对局")
+	}
+	return result, nil
+}

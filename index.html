@@ -190,26 +190,44 @@
     </form>
   </dialog>
 
-  <dialog id="manualMatchDialog">
+  <dialog id="manualMatchDialog" class="wide-dialog">
     <form id="manualMatchForm">
       <div class="dialog-head"><h2>录入历史对局</h2><button class="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <div class="collector-box" style="margin:0 18px 12px">
+        <div class="collector-head">
+          <div><strong>从客户端采集</strong><small id="manualCollectorStatus">点击按钮选择最近的自定义对局</small></div>
+          <button class="ghost" id="manualCollectBtn" type="button">获取对局列表</button>
+        </div>
+        <div class="recent-games hidden" id="recentGamesList"></div>
+      </div>
       <div class="dialog-grid manual-grid">
-        <section class="manual-team blue-team">
-          <div class="manual-team-head">
-            <div class="crest">蓝</div>
-            <input class="manual-team-name" id="manualBlueName" value="蓝方" placeholder="蓝方队名">
-            <button type="button" class="mini manual-balance" data-side="blue">随机分配</button>
+        <div class="collector-preview hidden full" id="manualGamePreview" style="margin:0">
+          <div class="collector-meta" id="manualGameMeta"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>队伍</th><th>LGG 选手</th><th>客户端账号</th><th>英雄</th><th>K / D / A</th><th>补刀</th></tr></thead>
+              <tbody id="manualGameBody"></tbody>
+            </table>
           </div>
-          <div class="manual-slots" id="manualBlueSlots"></div>
-        </section>
-        <section class="manual-team red-team">
-          <div class="manual-team-head">
-            <div class="crest">红</div>
-            <input class="manual-team-name" id="manualRedName" value="红方" placeholder="红方队名">
-            <button type="button" class="mini manual-balance" data-side="red">随机分配</button>
-          </div>
-          <div class="manual-slots" id="manualRedSlots"></div>
-        </section>
+        </div>
+        <div id="manualTeamSlots">
+          <section class="manual-team blue-team">
+            <div class="manual-team-head">
+              <div class="crest">蓝</div>
+              <input class="manual-team-name" id="manualBlueName" value="蓝方" placeholder="蓝方队名">
+              <button type="button" class="mini manual-balance" data-side="blue">随机分配</button>
+            </div>
+            <div class="manual-slots" id="manualBlueSlots"></div>
+          </section>
+          <section class="manual-team red-team">
+            <div class="manual-team-head">
+              <div class="crest">红</div>
+              <input class="manual-team-name" id="manualRedName" value="红方" placeholder="红方队名">
+              <button type="button" class="mini manual-balance" data-side="red">随机分配</button>
+            </div>
+            <div class="manual-slots" id="manualRedSlots"></div>
+          </section>
+        </div>
         <fieldset class="full"><legend>胜方（必填）</legend><label><input type="radio" name="manualWinner" value="blue" required> 蓝方</label><label><input type="radio" name="manualWinner" value="red"> 红方</label></fieldset>
         <label>比赛时间<input id="manualPlayedAt" type="datetime-local" required></label>
         <label class="full">备注<textarea id="manualNote" maxlength="500" rows="2" placeholder="可选"></textarea></label>
