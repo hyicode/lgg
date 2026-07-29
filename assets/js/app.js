@@ -1059,7 +1059,7 @@ async function login(event) {
   const alias = normalizeName($("#loginAccount").value);
   const email = accountAliases[alias] || $("#loginAccount").value.trim();
   if (!email.includes("@")) {
-    error.textContent = "账号只能使用 lgg_admin 或 lgg。";
+    error.textContent = "账号或密码不正确。";
     return;
   }
   try {
