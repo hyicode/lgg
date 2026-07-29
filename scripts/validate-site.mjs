@@ -5,6 +5,7 @@ const files = [
   "assets/styles.css",
   "assets/js/app.js",
   "assets/js/stats-core.js",
+  "assets/js/search-core.js",
   "assets/js/supabase-config.js",
   "supabase/schema.sql",
 ];

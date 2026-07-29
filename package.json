@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/stats.test.mjs",
+    "test": "node tests/run-tests.mjs",
     "validate": "node scripts/validate-site.mjs",
     "check": "npm run validate && npm test"
   }

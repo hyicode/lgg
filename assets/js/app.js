@@ -1,6 +1,8 @@
 import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
+import { createSearchForms, fuzzyMatches } from "./search-core.js";
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm";
+import { pinyin } from "https://cdn.jsdelivr.net/npm/pinyin-pro@3.28.2/+esm";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -13,6 +15,8 @@ const LANES = [
 ];
 const CACHE_SCHEMA = 10;
 const HISTORY_PAGE_SIZE = 20;
+const PLAYER_SUGGESTION_LIMIT = 8;
+const searchFormCache = new Map();
 
 const state = {
   supabase: null,
@@ -46,6 +50,22 @@ function escapeHtml(value = "") {
 
 function normalizeName(value = "") {
   return value.trim().toLocaleLowerCase("zh-CN").replace(/\s+/g, " ");
+}
+
+function searchForms(value = "") {
+  const key = String(value);
+  if (searchFormCache.has(key)) return searchFormCache.get(key);
+  const aliases = [
+    pinyin(key, { toneType: "none", nonZh: "consecutive" }),
+    pinyin(key, { pattern: "first", toneType: "none", nonZh: "consecutive" }),
+  ];
+  const forms = createSearchForms(key, aliases);
+  searchFormCache.set(key, forms);
+  return forms;
+}
+
+function fuzzySearch(value, query) {
+  return fuzzyMatches(searchForms(value), query);
 }
 
 function formatNumber(value, digits = 1) {
@@ -117,18 +137,69 @@ function makePlayerInputs(side) {
     container.insertAdjacentHTML("beforeend", `
       <label class="player-row">
         <span class="number">0${index}</span>
-        <input class="player-name" data-side="${side}" data-slot="${index - 1}" list="playerOptions" maxlength="24" autocomplete="off" placeholder="选择选手 ${index}" aria-label="${side === "blue" ? "蓝方" : "红方"}选手 ${index}">
+        <span class="player-search">
+          <input class="player-name search-input" data-side="${side}" data-slot="${index - 1}" maxlength="24" autocomplete="off" placeholder="搜索选手 ${index}" aria-label="${side === "blue" ? "蓝方" : "红方"}选手 ${index}" aria-autocomplete="list" aria-expanded="false">
+          <span class="player-suggestions hidden" role="listbox"></span>
+        </span>
         <span class="cost-label">费</span>
         <input class="cost-input" type="number" min="0" step="0.5" value="1" aria-label="选手 ${index} 费用">
       </label>`);
   }
 }
 
-function renderPlayerOptions() {
-  $("#playerOptions").innerHTML = activePlayers()
+function hidePlayerSuggestions(input) {
+  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions");
+  if (!suggestions) return;
+  suggestions.classList.add("hidden");
+  suggestions.innerHTML = "";
+  input.setAttribute("aria-expanded", "false");
+  delete input.dataset.suggestionIndex;
+}
+
+function matchingPlayers(query) {
+  return activePlayers()
+    .filter((player) => !query || fuzzySearch(player.displayName, query))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"))
-    .map((player) => `<option value="${escapeHtml(player.displayName)}"></option>`)
-    .join("");
+    .slice(0, PLAYER_SUGGESTION_LIMIT);
+}
+
+function renderPlayerSuggestions(input) {
+  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions");
+  if (!suggestions) return;
+  const matches = matchingPlayers(input.value.trim());
+  suggestions.innerHTML = matches.length
+    ? matches.map((player) => `<button type="button" role="option" data-player-option="${player.id}"><strong>${escapeHtml(player.displayName)}</strong><small>费用 ${formatNumber(player.defaultCost)}</small></button>`).join("")
+    : `<span class="no-suggestion">没有匹配的选手</span>`;
+  suggestions.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
+  input.dataset.suggestionIndex = "-1";
+}
+
+function selectPlayerSuggestion(input, playerId) {
+  const player = playerById(playerId);
+  if (!player?.active) return;
+  input.value = player.displayName;
+  input.dataset.playerId = player.id;
+  input.setCustomValidity("");
+  input.closest(".player-row").querySelector(".cost-input").value = formatNumber(player.defaultCost);
+  hidePlayerSuggestions(input);
+  updateCostTotals();
+  saveLocalSetup();
+}
+
+function movePlayerSuggestion(input, direction) {
+  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions");
+  if (!suggestions || suggestions.classList.contains("hidden")) renderPlayerSuggestions(input);
+  const options = [...suggestions.querySelectorAll("[data-player-option]")];
+  if (!options.length) return;
+  const current = Number(input.dataset.suggestionIndex || -1);
+  const next = (current + direction + options.length) % options.length;
+  options.forEach((option, index) => option.classList.toggle("active", index === next));
+  input.dataset.suggestionIndex = String(next);
+  options[next].scrollIntoView({ block: "nearest" });
+}
+
+function renderPlayerOptions() {
   for (const select of ["#submitterPlayer", "#editSubmitterPlayer"]) {
     const current = $(select).value;
     $(select).innerHTML = `<option value="">请选择</option>${activePlayers()
@@ -735,7 +806,7 @@ function renderHistory() {
 function renderLeaderboard() {
   const matches = selectedMatches("rank");
   const data = computeLeaderboards(matches);
-  const queryText = normalizeName($("#rankSearch").value);
+  const queryText = $("#rankSearch").value.trim();
   const minGames = Math.max(1, Number($("#minGames").value) || 1);
   const cards = [
     ["总场次", data.summary.matches],
@@ -746,7 +817,7 @@ function renderLeaderboard() {
   ];
   $("#summaryGrid").innerHTML = cards.map(([label, value]) => `<div class="summary-card"><small>${label}</small><strong>${escapeHtml(value)}</strong></div>`).join("");
 
-  const players = data.players.filter((player) => player.games >= minGames && (!queryText || normalizeName(player.name).includes(queryText)));
+  const players = data.players.filter((player) => player.games >= minGames && (!queryText || fuzzySearch(player.name, queryText)));
   $("#playerRankBody").innerHTML = players.length ? players.map((player) => `
     <tr>
       <td><strong>${escapeHtml(player.name)}</strong></td>
@@ -757,7 +828,7 @@ function renderLeaderboard() {
       <td>${escapeHtml(player.favoriteLane)} / ${escapeHtml(player.favoriteChampion)}</td>
     </tr>`).join("") : `<tr><td colspan="6" class="empty">没有符合条件的选手。</td></tr>`;
 
-  const champions = data.champions.filter((champion) => !queryText || normalizeName(`${champion.name} ${champion.slug}`).includes(queryText));
+  const champions = data.champions.filter((champion) => !queryText || fuzzySearch(`${champion.name} ${champion.slug}`, queryText));
   $("#championRankBody").innerHTML = champions.length ? champions.map((champion) => `
     <tr>
       <td><strong>${escapeHtml(champion.name)}</strong><br><small>${escapeHtml(champion.slug)}</small></td>
@@ -772,7 +843,7 @@ function renderLeaderboard() {
 function renderHeroStats() {
   if (!state.pools) return;
   const laneFilter = $("#heroLane").value;
-  const search = normalizeName($("#heroSearch").value);
+  const search = $("#heroSearch").value.trim();
   const laneNames = new Map(LANES.map(([key, name]) => [key, name]));
   const grouped = new Map();
   for (const [lane, heroes] of Object.entries(state.pools)) {
@@ -789,7 +860,7 @@ function renderHeroStats() {
     }
   }
   const rows = [...grouped.values()]
-    .filter((hero) => !search || normalizeName(`${hero.name} ${hero.slug}`).includes(search))
+    .filter((hero) => !search || fuzzySearch(`${hero.name} ${hero.slug}`, search))
     .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name, "zh-CN"));
   $("#heroStatsBody").innerHTML = rows.map((hero) => `
     <tr><td><strong>${escapeHtml(hero.name)}</strong><br><small>${escapeHtml(hero.slug)}</small></td><td>${hero.lanes.map(escapeHtml).join("<br>")}</td><td class="num">${formatNumber(hero.weight, 2)}%</td><td class="num">${formatNumber(hero.banRate, 2)}%</td></tr>`).join("");
@@ -1139,10 +1210,44 @@ function bindEvents() {
     if (button) rerollHero(Number(button.dataset.reroll));
   });
   document.addEventListener("input", (event) => {
-    if (event.target.matches(".player-name")) syncPlayerInput(event.target);
+    if (event.target.matches(".player-name")) {
+      syncPlayerInput(event.target);
+      renderPlayerSuggestions(event.target);
+    }
     if (event.target.matches(".cost-input,.team-name,#uniqueHeroes,#sequentialReveal")) {
       updateCostTotals();
       saveLocalSetup();
+    }
+  });
+  document.addEventListener("focusin", (event) => {
+    if (event.target.matches(".player-name")) renderPlayerSuggestions(event.target);
+  });
+  document.addEventListener("focusout", (event) => {
+    if (event.target.matches(".player-name")) {
+      setTimeout(() => hidePlayerSuggestions(event.target), 120);
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    const option = event.target.closest("[data-player-option]");
+    if (!option) return;
+    event.preventDefault();
+    const input = option.closest(".player-search").querySelector(".player-name");
+    selectPlayerSuggestion(input, option.dataset.playerOption);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!event.target.matches(".player-name")) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      movePlayerSuggestion(event.target, event.key === "ArrowDown" ? 1 : -1);
+    } else if (event.key === "Enter") {
+      const suggestions = event.target.closest(".player-search").querySelector(".player-suggestions");
+      const active = suggestions.querySelector("[data-player-option].active");
+      if (active) {
+        event.preventDefault();
+        selectPlayerSuggestion(event.target, active.dataset.playerOption);
+      }
+    } else if (event.key === "Escape") {
+      hidePlayerSuggestions(event.target);
     }
   });
   for (const container of ["#matchList", "#adminMatchList"]) {

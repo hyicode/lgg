@@ -65,7 +65,6 @@
             <div class="players" id="redPlayers"></div>
           </div>
         </div>
-        <datalist id="playerOptions"></datalist>
         <div class="control">
           <button class="ghost" id="balanceBtn">随机分选手</button>
           <label class="check"><input type="checkbox" id="uniqueHeroes"> 禁止英雄重复（全局）</label>
@@ -115,7 +114,7 @@
       </div>
       <div class="summary-grid" id="summaryGrid"></div>
       <div class="rank-tools">
-        <input id="rankSearch" placeholder="搜索选手或英雄…">
+        <input class="search-input" id="rankSearch" type="search" placeholder="支持中文、拼音或首字母…">
         <label>最少场次 <input id="minGames" type="number" min="1" value="1"></label>
       </div>
       <div class="rank-grid">
@@ -177,7 +176,7 @@
 
   <dialog id="heroStatsDialog" class="wide-dialog">
     <div class="dialog-head"><h2>OPGG 英雄分路数据</h2><button class="icon-btn" id="heroStatsClose" aria-label="关闭">×</button></div>
-    <div class="rank-tools"><input id="heroSearch" placeholder="搜索英雄…"><select id="heroLane"><option value="all">全部分路</option><option value="top">上单</option><option value="jungle">打野</option><option value="middle">中路</option><option value="bottom">下路</option><option value="support">辅助</option></select></div>
+    <div class="rank-tools"><input class="search-input" id="heroSearch" type="search" placeholder="支持中文、拼音或首字母…"><select id="heroLane"><option value="all">全部分路</option><option value="top">上单</option><option value="jungle">打野</option><option value="middle">中路</option><option value="bottom">下路</option><option value="support">辅助</option></select></div>
     <div class="table-wrap hero-table"><table><thead><tr><th>英雄</th><th>分路</th><th>登场率</th><th>禁用率</th></tr></thead><tbody id="heroStatsBody"></tbody></table></div>
   </dialog>
 
