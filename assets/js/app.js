@@ -157,7 +157,13 @@ function hidePlayerSuggestions(input) {
 }
 
 function matchingPlayers(query) {
+  const selectedIds = new Set(
+    $$(".player-name")
+      .map((input) => input.dataset.playerId)
+      .filter(Boolean),
+  );
   return activePlayers()
+    .filter((player) => !selectedIds.has(player.id))
     .filter((player) => !query || fuzzySearch(player.displayName, query))
     .sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"))
     .slice(0, PLAYER_SUGGESTION_LIMIT);
