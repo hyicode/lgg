@@ -1695,7 +1695,19 @@ function toggleCustomRange(prefix) {
 
 function bindEvents() {
   $("#loginForm").addEventListener("submit", login);
-  $("#logoutBtn").addEventListener("click", () => state.supabase.auth.signOut());
+  $("#logoutBtn").addEventListener("click", async () => {
+    try {
+      await state.supabase.auth.signOut();
+    } catch {
+      // 网络失败时强制清除本地会话
+      clearSubscriptions();
+      state.user = null;
+      state.member = null;
+      $("#app").classList.add("hidden");
+      $("#authGate").classList.remove("hidden");
+      toast("已退出（离线模式）。");
+    }
+  });
   $$(".nav-btn").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#rollBtn").addEventListener("click", roll);
   $("#balanceBtn").addEventListener("click", balancePlayers);
