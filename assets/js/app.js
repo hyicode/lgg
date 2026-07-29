@@ -1,7 +1,7 @@
 import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
 import { createSearchForms, fuzzyMatches } from "./search-core.js";
-import { matchCollectedParticipants } from "./collector-core.js";
+import { matchCollectedParticipants, championSlug } from "./collector-core.js";
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm";
 import { pinyin } from "https://cdn.jsdelivr.net/npm/pinyin-pro@3.28.2/+esm";
 
@@ -246,7 +246,8 @@ function syncPlayerInput(input, updateCost = true) {
   input.dataset.playerId = player?.id || "";
   input.setCustomValidity(input.value && !player ? "请从共享选手库中选择" : "");
   if (player && updateCost && previousId !== player.id) {
-    input.closest(".player-row").querySelector(".cost-input").value = formatNumber(player.defaultCost);
+    const costInput = input.closest(".player-row")?.querySelector(".cost-input");
+    if (costInput) costInput.value = formatNumber(player.defaultCost);
   }
   updateCostTotals();
 }
@@ -276,8 +277,10 @@ function setLineup(side, players) {
 
 function updateCostTotals() {
   for (const side of ["blue", "red"]) {
+    const el = $(`#${side}Cost`);
+    if (!el) continue;
     const total = lineup(side).reduce((sum, player) => sum + (Number.isFinite(player.cost) ? player.cost : 0), 0);
-    $(`#${side}Cost`).textContent = `费用 ${formatNumber(total)}`;
+    el.textContent = `费用 ${formatNumber(total)}`;
   }
 }
 
@@ -1131,6 +1134,134 @@ async function submitMatch(event) {
   }
 }
 
+// ---- 手动录入历史对局 ----
+
+function renderManualSlots(side) {
+  const container = $(`#manual${side === "blue" ? "Blue" : "Red"}Slots`);
+  container.innerHTML = "";
+  for (let i = 1; i <= 5; i++) {
+    container.insertAdjacentHTML("beforeend", `
+      <label class="player-row">
+        <span class="number">0${i}</span>
+        <span class="player-search">
+          <input class="player-name search-input" data-side="manual-${side}" data-slot="${i - 1}" maxlength="24" autocomplete="off" placeholder="搜索选手 ${i}" aria-label="${side === "blue" ? "蓝方" : "红方"}选手 ${i}">
+          <span class="player-suggestions hidden" role="listbox"></span>
+        </span>
+        <input class="manual-champion" type="text" maxlength="20" placeholder="英雄(选填)" aria-label="选手 ${i} 英雄">
+      </label>`);
+  }
+}
+
+function openManualMatchDialog() {
+  $("#manualMatchForm").reset();
+  $("#manualMatchError").textContent = "";
+  $("#manualPlayedAt").value = localDateTimeValue();
+  renderManualSlots("blue");
+  renderManualSlots("red");
+  $("#manualMatchDialog").showModal();
+}
+
+async function submitManualMatch(event) {
+  event.preventDefault();
+  const button = $("#submitManualBtn");
+  const error = $("#manualMatchError");
+  try {
+    const winner = new FormData($("#manualMatchForm")).get("manualWinner");
+    if (!winner) throw new Error("请选择胜方。");
+    const playedAt = new Date($("#manualPlayedAt").value);
+    if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
+
+    // 收集双方选手
+    const players = activePlayers();
+    const playerByName = new Map(players.map((p) => [normalizeName(p.displayName), p]));
+    const usedIds = new Set();
+    const collectTeam = (side) => {
+      const slots = $$(`#manual${side === "blue" ? "Blue" : "Red"}Slots .player-name`);
+      return [...slots].map((input, idx) => {
+        const name = input.value.trim();
+        if (!name) throw new Error(`${side === "blue" ? "蓝方" : "红方"}第 ${idx + 1} 位选手未填写。`);
+        const key = normalizeName(name);
+        const player = playerByName.get(key);
+        if (!player) throw new Error(`未找到选手"${name}"，请从下拉建议中选择。`);
+        if (usedIds.has(player.id)) throw new Error(`选手"${name}"重复选择。`);
+        usedIds.add(player.id);
+        const champInput = input.closest(".player-row").querySelector(".manual-champion");
+        const champName = champInput?.value.trim() || "";
+        return {
+          team: side,
+          playerId: player.id,
+          playerName: player.displayName,
+          accountName: "",
+          cost: player.defaultCost,
+          lane: LANES[idx][0],
+          laneLabel: LANES[idx][1],
+          champion: champName ? { slug: championSlug(champName), name: champName, weight: 0, banRate: 0 } : { slug: "", name: "", weight: 0, banRate: 0 },
+        };
+      });
+    };
+    const blue = collectTeam("blue");
+    const red = collectTeam("red");
+
+    const blueName = $("#manualBlueName").value.trim() || "蓝方";
+    const redName = $("#manualRedName").value.trim() || "红方";
+
+    const payload = {
+      id: crypto.randomUUID(),
+      schema_version: 1,
+      played_at: playedAt.toISOString(),
+      created_by: state.user.id,
+      winner,
+      score: { blue: null, red: null },
+      note: $("#manualNote").value.trim(),
+      teams: {
+        blueName,
+        redName,
+        blueTotalCost: blue.reduce((s, r) => s + r.cost, 0),
+        redTotalCost: red.reduce((s, r) => s + r.cost, 0),
+      },
+      lineup: [...blue, ...red],
+      bans: [],
+      options: { uniqueHeroes: false, sequentialReveal: false },
+      data_version: {
+        source: state.poolMeta?.source || "OPGG",
+        patch: state.poolMeta?.patch || "",
+        capturedAt: state.poolMeta?.capturedAt || "",
+        generatorVersion: Number(state.poolMeta?.generatorVersion || 0),
+      },
+    };
+
+    button.disabled = true;
+    error.textContent = "";
+    const { error: insertError } = await state.supabase.from("matches").insert(payload);
+    if (insertError) throw insertError;
+    $("#manualMatchDialog").close();
+    toast("历史对局已录入。");
+    await refreshMatches();
+  } catch (caught) {
+    error.textContent = caught.message || "录入失败，请检查网络后重试。";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function manualBalance(side) {
+  const slots = $$(`#manual${side === "blue" ? "Blue" : "Red"}Slots .player-name`);
+  const usedNames = new Set(
+    $$("#manualBlueSlots .player-name, #manualRedSlots .player-name")
+      .map((inp) => normalizeName(inp.value))
+      .filter(Boolean)
+  );
+  const available = activePlayers().filter((p) => !usedNames.has(normalizeName(p.displayName)));
+  const shuffled = available.sort(() => Math.random() - 0.5);
+  slots.forEach((input, i) => {
+    if (!input.value.trim() && shuffled[i]) {
+      input.value = shuffled[i].displayName;
+      input.dataset.playerId = shuffled[i].id;
+    }
+  });
+  updateCostTotals();
+}
+
 function selectedMatches(prefix) {
   return filterMatchesByRange(
     state.matches,
@@ -1576,6 +1707,12 @@ function bindEvents() {
   $("#resetBtn").addEventListener("click", resetSetup);
   $("#recordForm").addEventListener("submit", submitMatch);
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
+  $("#manualMatchForm").addEventListener("submit", submitManualMatch);
+  $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
+  document.addEventListener("click", (event) => {
+    const btn = event.target.closest(".manual-balance");
+    if (btn) manualBalance(btn.dataset.side);
+  });
   $$("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog").close());
   });

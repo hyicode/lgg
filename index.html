@@ -94,6 +94,7 @@
       <div class="section-head">
         <div><h2>对局历史</h2><p>仅手动提交的比赛会出现在这里。</p></div>
         <div class="filters">
+          <button class="ghost" id="manualMatchBtn">录入历史对局</button>
           <select id="historyRange"><option value="all">全部时间</option><option value="30">最近 30 天</option><option value="custom">自定义</option></select>
           <input class="hidden" id="historyFrom" type="date" aria-label="开始日期">
           <input class="hidden" id="historyTo" type="date" aria-label="结束日期">
@@ -186,6 +187,35 @@
       </div>
       <div class="form-error" id="editMatchError" role="alert"></div>
       <div class="dialog-actions"><button class="ghost" type="button" data-close-dialog>取消</button><button class="primary" id="saveMatchBtn" type="submit">保存修改</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="manualMatchDialog">
+    <form id="manualMatchForm">
+      <div class="dialog-head"><h2>录入历史对局</h2><button class="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button></div>
+      <div class="dialog-grid manual-grid">
+        <section class="manual-team blue-team">
+          <div class="manual-team-head">
+            <div class="crest">蓝</div>
+            <input class="manual-team-name" id="manualBlueName" value="蓝方" placeholder="蓝方队名">
+            <button type="button" class="mini manual-balance" data-side="blue">随机分配</button>
+          </div>
+          <div class="manual-slots" id="manualBlueSlots"></div>
+        </section>
+        <section class="manual-team red-team">
+          <div class="manual-team-head">
+            <div class="crest">红</div>
+            <input class="manual-team-name" id="manualRedName" value="红方" placeholder="红方队名">
+            <button type="button" class="mini manual-balance" data-side="red">随机分配</button>
+          </div>
+          <div class="manual-slots" id="manualRedSlots"></div>
+        </section>
+        <fieldset class="full"><legend>胜方（必填）</legend><label><input type="radio" name="manualWinner" value="blue" required> 蓝方</label><label><input type="radio" name="manualWinner" value="red"> 红方</label></fieldset>
+        <label>比赛时间<input id="manualPlayedAt" type="datetime-local" required></label>
+        <label class="full">备注<textarea id="manualNote" maxlength="500" rows="2" placeholder="可选"></textarea></label>
+      </div>
+      <div class="form-error" id="manualMatchError" role="alert"></div>
+      <div class="dialog-actions"><button class="ghost" type="button" data-close-dialog>取消</button><button class="primary" id="submitManualBtn" type="submit">确认录入</button></div>
     </form>
   </dialog>
 
