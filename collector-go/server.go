@@ -276,11 +276,11 @@ func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request
 
 	// 第一次尝试
 	status := cs.proxyRequest(w, r, targetURL, client.Authorization)
-	if status != 401 && status != 403 {
+	if status != 401 && status != 403 && status != 502 {
 		return
 	}
 
-	// 认证失败，清除缓存并重新发现
+	// 认证失败或超时，清除缓存并重新发现
 	fmt.Fprintf(os.Stderr, "[代理] LCU 返回 %d，重新发现客户端...\n", status)
 	cs.clearCachedClient()
 	client, err = cs.getCachedClient()

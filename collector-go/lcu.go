@@ -15,7 +15,7 @@ func lcuHTTPClient() *http.Client {
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
-		Timeout: 4 * time.Second,
+		Timeout: 15 * time.Second,
 	}
 }
 

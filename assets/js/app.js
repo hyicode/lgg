@@ -1952,18 +1952,17 @@ function toggleCustomRange(prefix) {
 function bindEvents() {
   $("#loginForm").addEventListener("submit", login);
   $("#logoutBtn").addEventListener("click", async () => {
-    try {
-      await state.supabase.auth.signOut();
-    } catch {
-      // 网络失败：先本地登出（绕过远程验证）
+    const { error } = await state.supabase.auth.signOut();
+    if (error) {
+      // 远程登出失败（token 过期等），本地强制清除
       await state.supabase.auth.signOut({ scope: "local" }).catch(() => {});
-      clearSubscriptions();
-      state.user = null;
-      state.member = null;
-      $("#app").classList.add("hidden");
-      $("#authGate").classList.remove("hidden");
       toast("已退出（离线模式）。");
     }
+    clearSubscriptions();
+    state.user = null;
+    state.member = null;
+    $("#app").classList.add("hidden");
+    $("#authGate").classList.remove("hidden");
   });
   $$(".nav-btn").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#rollBtn").addEventListener("click", roll);
