@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -151,29 +152,49 @@ func (cs *CollectorServer) handleRequest(w http.ResponseWriter, r *http.Request)
 
 // ---- 透明代理 ----
 
-// getCachedClient 获取缓存的 LCU 客户端，缓存未命中时重新发现
+// getCachedClient 获取缓存的 LCU 客户端，缓存未命中或过期时重新发现
 func (cs *CollectorServer) getCachedClient() (*LeagueClient, error) {
 	cs.clientMu.Lock()
 	defer cs.clientMu.Unlock()
 
+	// 缓存过期时间 30 分钟（LCU token 会定期轮换）
+	const cacheTTL = 30 * time.Minute
+
 	if cs.cachedClient != nil {
-		return cs.cachedClient, nil
+		// 检查是否过期
+		if time.Since(cs.cachedClient.DiscoveredAt) < cacheTTL {
+			return cs.cachedClient, nil
+		}
+		fmt.Fprintf(os.Stderr, "[代理] 客户端缓存已过期，重新发现...\n")
+		cs.cachedClient = nil
 	}
+
 	client, err := discoverLeagueClient()
 	if err != nil {
 		return nil, err
 	}
 	cs.cachedClient = client
+	fmt.Fprintf(os.Stderr, "[代理] 客户端已发现：%s\n", client.BaseURL)
 	return cs.cachedClient, nil
 }
 
-// proxyRequest 通用代理转发
-func (cs *CollectorServer) proxyRequest(w http.ResponseWriter, r *http.Request, targetURL string, authHeader string) {
+// clearCachedClient 清除缓存的 LCU 客户端（认证失败时调用）
+func (cs *CollectorServer) clearCachedClient() {
+	cs.clientMu.Lock()
+	defer cs.clientMu.Unlock()
+	if cs.cachedClient != nil {
+		fmt.Fprintf(os.Stderr, "[代理] 认证失败，清除缓存客户端\n")
+	}
+	cs.cachedClient = nil
+}
+
+// proxyRequest 通用代理转发，返回响应状态码
+func (cs *CollectorServer) proxyRequest(w http.ResponseWriter, r *http.Request, targetURL string, authHeader string) int {
 	// 构造目标请求
 	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
 	if err != nil {
 		writeJSON(w, 502, ErrorResponse{Error: fmt.Sprintf("构造代理请求失败: %s", err.Error())}, r.Header.Get("Origin"))
-		return
+		return 502
 	}
 
 	// 复制请求头（排除 hop-by-hop）
@@ -197,7 +218,7 @@ func (cs *CollectorServer) proxyRequest(w http.ResponseWriter, r *http.Request, 
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		writeJSON(w, 502, ErrorResponse{Error: fmt.Sprintf("代理请求失败: %s", err.Error())}, r.Header.Get("Origin"))
-		return
+		return 502
 	}
 	defer resp.Body.Close()
 
@@ -218,9 +239,10 @@ func (cs *CollectorServer) proxyRequest(w http.ResponseWriter, r *http.Request, 
 
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+	return resp.StatusCode
 }
 
-// handleLCUProxy 代理 LCU API 请求
+// handleLCUProxy 代理 LCU API 请求（认证失败自动重试）
 // 用法: GET/POST /proxy/lcu/lol-match-history/v1/games/12345
 func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request) {
 	cs.mu.Lock()
@@ -252,6 +274,22 @@ func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request
 	}
 	targetURL := client.BaseURL + endpoint
 
+	// 第一次尝试
+	status := cs.proxyRequest(w, r, targetURL, client.Authorization)
+	if status != 401 && status != 403 {
+		return
+	}
+
+	// 认证失败，清除缓存并重新发现
+	fmt.Fprintf(os.Stderr, "[代理] LCU 返回 %d，重新发现客户端...\n", status)
+	cs.clearCachedClient()
+	client, err = cs.getCachedClient()
+	if err != nil {
+		writeJSON(w, 503, ErrorResponse{Error: fmt.Sprintf("重新发现客户端失败: %s", err.Error())}, origin)
+		return
+	}
+
+	targetURL = client.BaseURL + endpoint
 	cs.proxyRequest(w, r, targetURL, client.Authorization)
 }
 

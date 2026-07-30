@@ -18,6 +18,7 @@ const CACHE_SCHEMA = 10;
 const HISTORY_PAGE_SIZE = 20;
 const COLLECTOR_URL = "http://127.0.0.1:32145";
 const searchFormCache = new Map();
+let championIdMap = null; // { championId: "championName" }
 
 const state = {
   supabase: null,
@@ -68,36 +69,72 @@ function searchForms(value = "") {
   return forms;
 }
 
-// ---- 本地选手名 ↔ 游戏账号名 映射 ----
+// ---- 本地 LGG 选手 ↔ 客户端玩家 双向映射 ----
 
-const NAME_MAP_KEY = "lgg-name-map-v1";
+const NAME_MAP_KEY = "lgg-name-map-v2";
 
 function loadNameMappings() {
   try {
     const raw = localStorage.getItem(NAME_MAP_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+    const data = raw ? JSON.parse(raw) : null;
+    if (data && data.byPlayerId && data.byAccountName) return data;
+  } catch { /* ignore */ }
+  // 兼容旧版 v1 {playerId: accountName}
+  try {
+    const raw = localStorage.getItem("lgg-name-map-v1");
+    if (raw) {
+      const old = JSON.parse(raw);
+      const byPlayerId = {};
+      const byAccountName = {};
+      for (const [pid, name] of Object.entries(old)) {
+        if (!pid || !name) continue;
+        const key = normalizeName(name);
+        byPlayerId[pid] = name;
+        byAccountName[key] = pid;
+      }
+      const map = { byPlayerId, byAccountName, version: 2 };
+      localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
+      localStorage.removeItem("lgg-name-map-v1");
+      return map;
+    }
+  } catch { /* ignore */ }
+  return { byPlayerId: {}, byAccountName: {}, version: 2 };
 }
 
-function saveNameMapping(playerId, accountName) {
+function saveBidirectionalMapping(playerId, accountName) {
   if (!playerId || !accountName) return;
   const map = loadNameMappings();
-  map[playerId] = accountName;
+  const accKey = normalizeName(accountName);
+  // 清除旧的反向映射
+  const oldAcc = map.byPlayerId[playerId];
+  if (oldAcc) delete map.byAccountName[normalizeName(oldAcc)];
+  // 清除旧的正向映射
+  const oldPid = map.byAccountName[accKey];
+  if (oldPid) delete map.byPlayerId[oldPid];
+  // 写入双向
+  map.byPlayerId[playerId] = accountName;
+  map.byAccountName[accKey] = playerId;
   try {
     localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
-  } catch { /* quota exceeded, ignore */ }
+  } catch { /* quota exceeded */ }
 }
 
-/** 用历史映射增强 participantScore */
-function matchByName(participant, playerId) {
+/** 根据客户端账号名找 LGG 选手 */
+function findPlayerByAccount(accountName) {
+  if (!accountName) return null;
   const map = loadNameMappings();
-  const storedName = map[playerId];
-  if (!storedName) return false;
-  const accName = normalizeName(participant.accountName || "");
-  const accBase = accName.split("#")[0];
-  return normalizeName(storedName) === accName || normalizeName(storedName) === accBase;
+  const key = normalizeName(accountName);
+  const baseKey = key.split("#")[0];
+  const pid = map.byAccountName[key] || map.byAccountName[baseKey];
+  if (!pid) return null;
+  return playerById(pid);
+}
+
+/** 根据 LGG 选手 ID 找客户端账号 */
+function findAccountByPlayer(playerId) {
+  if (!playerId) return "";
+  const map = loadNameMappings();
+  return map.byPlayerId[playerId] || "";
 }
 
 function fuzzySearch(value, query) {
@@ -823,7 +860,6 @@ function renderCollectedMatch() {
     const clientPlayer = result._clientPlayer || "";
     const clientChamp = result._clientChampion || result.champion?.name || "";
     const clientKDA = result._clientKDA || "";
-    const clientCS = result._clientCS || 0;
 
     // LGG 选手列（可拖动交换）
     const playerCell = result.player.name
@@ -844,7 +880,6 @@ function renderCollectedMatch() {
         <td>${escapeHtml(clientPlayer || "—")}</td>
         <td>${escapeHtml(clientChamp || "—")}</td>
         <td class="num">${clientKDA || "—"}</td>
-        <td class="num">${clientCS || "—"}</td>
       </tr>`;
   }).join("");
 
@@ -870,7 +905,7 @@ function renderCollectedMatch() {
   // 绑定拖拽事件（仅普通采集模式）
   if (!isManualEntry) bindDragEvents();
 
-  // 手动选人：更新 roster
+  // 手动选人：更新 roster + 保存映射
   $$(".manual-roster-pick").forEach((input) => {
     input.addEventListener("blur", () => {
       const idx = parseInt(input.dataset.rosterIdx);
@@ -878,7 +913,9 @@ function renderCollectedMatch() {
       if (playerId && playerById(playerId)) {
         const player = playerById(playerId);
         state.results[idx].player = { id: player.id, name: player.displayName, cost: player.defaultCost };
-        // 有名字后刷新以显示拖动芯片
+        // 保存双向映射
+        const clientName = state.results[idx]._clientPlayer;
+        if (clientName) saveBidirectionalMapping(player.id, clientName);
         renderCollectedMatch();
       }
     });
@@ -972,14 +1009,14 @@ function bindDragEvents() {
       state.matchedParticipants.set(playerId, participantIdx);
       // 记住映射关系，下次自动匹配
       const p = state.collectedMatch?.participants?.[participantIdx];
-      if (p?.accountName) saveNameMapping(playerId, p.accountName);
+      if (p?.accountName) saveBidirectionalMapping(playerId, p.accountName);
       renderCollectedMatch();
     });
   });
 
   // 也允许放到整行上
   $$("#collectorBody tr").forEach((row) => {
-    if (row.querySelector(".drop-zone")) return; // 由 drop-zone 处理
+    if (row.querySelector(".drop-zone")) return;
     row.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
@@ -995,7 +1032,7 @@ function bindDragEvents() {
       }
       state.matchedParticipants.set(playerId, participantIdx);
       const p = state.collectedMatch?.participants?.[participantIdx];
-      if (p?.accountName) saveNameMapping(playerId, p.accountName);
+      if (p?.accountName) saveBidirectionalMapping(playerId, p.accountName);
       renderCollectedMatch();
     });
   });
@@ -1031,7 +1068,8 @@ async function collectMatchData() {
     let collected;
     if (manualGameId) {
       const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${manualGameId}`, 12_000);
-      const normalized = normalizeLcuGameDetail(detail);
+      const champMap = await loadChampionIdMap();
+      const normalized = normalizeLcuGameDetail(detail, champMap);
       if (!normalized || normalized.participants.length < 5) {
         throw new Error("对局详情获取失败或玩家不足。");
       }
@@ -1052,7 +1090,6 @@ async function collectMatchData() {
             kills: p.stats?.kills || 0,
             deaths: p.stats?.deaths || 0,
             assists: p.stats?.assists || 0,
-            creepScore: p.stats?.creepScore || p.stats?.minionsKilled || 0,
             goldEarned: p.stats?.goldEarned || 0,
             visionScore: p.stats?.visionScore || 0,
             damageDealt: p.stats?.totalDamageDealtToChampions || 0,
@@ -1069,20 +1106,30 @@ async function collectMatchData() {
     }
     state.collectedMatch = collected;
     // 自动匹配：先用历史映射，再用 score 匹配
-    const nameMap = loadNameMappings();
     const participants = collected.participants;
     state.matchedParticipants = new Map();
     const used = new Set();
-    // 第一轮：历史名字映射精准匹配
+    // 第一轮：本地双向映射精准匹配
     for (const result of state.results) {
-      const storedName = nameMap[result.player.id];
-      if (!storedName) continue;
-      const found = participants.findIndex((p, i) =>
-        !used.has(i) && normalizeName(p.accountName || "").startsWith(normalizeName(storedName))
-      );
-      if (found >= 0) {
-        state.matchedParticipants.set(result.player.id, found);
-        used.add(found);
+      const storedAcc = findAccountByPlayer(result.player.id);
+      if (storedAcc) {
+        const found = participants.findIndex((p, i) =>
+          !used.has(i) && normalizeName(p.accountName || "") === normalizeName(storedAcc)
+        );
+        if (found >= 0) {
+          state.matchedParticipants.set(result.player.id, found);
+          used.add(found);
+          continue;
+        }
+      }
+      // 反向查：用客户端账号找 LGG 选手
+      const pp = participants.find((p, i) => !used.has(i) && p.accountName);
+      if (pp) {
+        const matched = findPlayerByAccount(pp.accountName);
+        if (matched && matched.id === result.player.id) {
+          state.matchedParticipants.set(result.player.id, participants.indexOf(pp));
+          used.add(participants.indexOf(pp));
+        }
       }
     }
     // 第二轮：用 score 匹配剩余
@@ -1094,7 +1141,7 @@ async function collectMatchData() {
         const pIdx = participants.indexOf(participant);
         if (pIdx >= 0) {
           state.matchedParticipants.set(result.player.id, pIdx);
-          saveNameMapping(result.player.id, participant.accountName);
+          saveBidirectionalMapping(result.player.id, participant.accountName);
         }
       }
     }
@@ -1131,8 +1178,8 @@ function matchSnapshot() {
         lane: result.lane,
         laneLabel: result.laneLabel,
         champion: {
-          slug: championSlug(participant?.championName || ""),
-          name: participant?.championName || "",
+          slug: championSlug(participant?.championName || result.champion?.name || result._clientChampion || ""),
+          name: participant?.championName || result.champion?.name || result._clientChampion || "",
         },
         ...(participant?.stats ? { stats: participant.stats } : {}),
       };
@@ -1234,11 +1281,12 @@ async function fetchRecentGames() {
     }
 
     status.textContent = `找到 ${customGames.length} 场自定义对局，正在拉取详情…`;
+    const champMap = await loadChampionIdMap();
     const detailedGames = [];
     for (const g of customGames) {
       try {
         const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${g.gameId}`, 8000);
-        const normalized = normalizeLcuGameDetail(detail);
+        const normalized = normalizeLcuGameDetail(detail, champMap);
         if (normalized && normalized.participants.length >= 5) {
           detailedGames.push(normalized);
         }
@@ -1258,11 +1306,26 @@ async function fetchRecentGames() {
   }
 }
 
+// 加载冠军 ID→名称映射（缓存一次）
+async function loadChampionIdMap() {
+  if (championIdMap) return championIdMap;
+  try {
+    const data = await collectorRequest("/proxy/lcu/lol-game-data/assets/v1/champion-summary.json", 5000);
+    const map = {};
+    for (const c of (data || [])) {
+      if (c.id > 0) map[c.id] = c.name || c.alias || "";
+    }
+    championIdMap = map;
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 // 规范化 LCU 对局详情
-function normalizeLcuGameDetail(raw) {
+function normalizeLcuGameDetail(raw, champMap = {}) {
   const game = raw?.game || raw;
   if (!game) return null;
-  // 合并 participantIdentities 到 participants
   const identities = game.participantIdentities || [];
   const idMap = new Map();
   for (const id of identities) {
@@ -1272,13 +1335,14 @@ function normalizeLcuGameDetail(raw) {
   const participants = (game.participants || []).map(p => {
     const player = idMap.get(p.participantId) || {};
     const stats = p.stats || {};
+    const champName = p.championName || (p.champion && p.champion.name) || p.skinName || player.championName || champMap[p.championId] || "";
     return {
       team: (p.teamId === 100 || p.team === "ORDER" || p.team === "BLUE") ? "blue" : "red",
       accountName: player.summonerName || player.gameName ||
         (player.riotIdGameName && player.riotIdTagLine ? `${player.riotIdGameName}#${player.riotIdTagLine}` : "") ||
         player.riotId || "",
-      championName: p.championName || player.championName || "",
-      championId: p.championId || 0,
+      championName: champName,
+      championId: p.championId || (p.champion && p.champion.id) || 0,
       stats: stats,
       win: stats.win === true || stats.win === "Win" || p.win === true || p.win === "Win",
     };
@@ -1349,12 +1413,7 @@ function selectRecentGame(game) {
     const p = participants[i] || {};
     const team = p.team || (i < 5 ? "blue" : "red");
     const posIdx = results.filter(r => r.team === team).length;
-    const matchedPlayer = p.accountName
-      ? players.find(pl =>
-          normalizeName(pl.displayName) === normalizeName(p.accountName) ||
-          normalizeName(pl.displayName) === normalizeName(p.accountName?.split("#")[0])
-        )
-      : null;
+    const matchedPlayer = p.accountName ? findPlayerByAccount(p.accountName) : null;
 
     results.push({
       player: {
@@ -1374,7 +1433,7 @@ function selectRecentGame(game) {
       _clientPlayer: p.accountName || `玩家${i + 1}`,
       _clientChampion: p.championName || "",
       _clientKDA: p.stats ? `${p.stats.kills || 0}/${p.stats.deaths || 0}/${p.stats.assists || 0}` : "",
-      _clientCS: p.stats?.creepScore || p.stats?.minionsKilled || 0,
+
       _participantIdx: i,
     });
   }
@@ -1396,7 +1455,6 @@ function selectRecentGame(game) {
         kills: p.stats?.kills || 0,
         deaths: p.stats?.deaths || 0,
         assists: p.stats?.assists || 0,
-        creepScore: p.stats?.creepScore || p.stats?.minionsKilled || 0,
         goldEarned: p.stats?.goldEarned || 0,
         visionScore: p.stats?.visionScore || 0,
         damageDealt: p.stats?.totalDamageDealtToChampions || 0,
@@ -1459,7 +1517,6 @@ function matchCard(match, includeActions = true) {
       <td>${escapeHtml(slot.champion?.name || "—")}</td>
       <td>${escapeHtml(slot.accountName || "—")}</td>
       <td class="num">${slot.stats?.kills ?? 0} / ${slot.stats?.deaths ?? 0} / ${slot.stats?.assists ?? 0}</td>
-      <td class="num">${slot.stats?.creepScore ?? 0}</td>
     </tr>`;
   return `
     <article class="match-card">
@@ -1476,7 +1533,7 @@ function matchCard(match, includeActions = true) {
         ${hasDetail ? `
         <div class="table-wrap">
           <table>
-            <thead><tr><th>分路</th><th>选手</th><th>英雄</th><th>客户端账号</th><th>K / D / A</th><th>补刀</th></tr></thead>
+            <thead><tr><th>分路</th><th>选手</th><th>英雄</th><th>客户端账号</th><th>K / D / A</th></tr></thead>
             <tbody>${[...blue, ...red].map(detailRow).join("")}</tbody>
           </table>
         </div>` : `<div class="loading-detail">点击加载详情…</div>`}
@@ -1819,7 +1876,8 @@ async function handleAuthUser(user) {
     showAuthenticatedApp();
   } catch (error) {
     $("#loginError").textContent = error.message;
-    await state.supabase.auth.signOut();
+    // 仅清除本地会话，不发起网络请求（避免 403）
+    await state.supabase.auth.signOut({ scope: "local" }).catch(() => {});
   }
 }
 
@@ -1897,7 +1955,8 @@ function bindEvents() {
     try {
       await state.supabase.auth.signOut();
     } catch {
-      // 网络失败时强制清除本地会话
+      // 网络失败：先本地登出（绕过远程验证）
+      await state.supabase.auth.signOut({ scope: "local" }).catch(() => {});
       clearSubscriptions();
       state.user = null;
       state.member = null;

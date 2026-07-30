@@ -5,12 +5,14 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // LeagueClient 英雄联盟客户端连接信息
 type LeagueClient struct {
 	BaseURL       string
 	Authorization string
+	DiscoveredAt  time.Time
 }
 
 // discoverLeagueClient 通过 PowerShell 查找 LeagueClientUx.exe 进程
@@ -55,5 +57,6 @@ func discoverLeagueClient() (*LeagueClient, error) {
 	return &LeagueClient{
 		BaseURL:       fmt.Sprintf("https://127.0.0.1:%s", port),
 		Authorization: fmt.Sprintf("Basic %s", basicAuth("riot", token)),
+		DiscoveredAt:  time.Now(),
 	}, nil
 }
