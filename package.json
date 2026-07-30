@@ -7,5 +7,22 @@
     "test": "node tests/run-tests.mjs",
     "validate": "node scripts/validate-site.mjs",
     "check": "npm run validate && npm test"
-  }
+  },
+  "version": "1.0.0",
+  "description": "基于 GitHub Pages、Supabase Auth 和 PostgreSQL 的英雄联盟内部 PVP\r 抽签与多人共享战绩工具。",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyicode/lgg.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/hyicode/lgg/issues"
+  },
+  "homepage": "https://github.com/hyicode/lgg#readme"
 }

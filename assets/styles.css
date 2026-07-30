@@ -103,6 +103,16 @@ tr.matched .lane,tr.unmatched .lane{color:var(--muted);font-size:11px}
 .rg-dur{color:var(--gold2);font-size:11px;white-space:nowrap}
 .rg-teams{flex:1;min-width:0;font-size:11px;line-height:1.5}
 .rg-blue{color:#76daf0}.rg-red{color:#ff8590}
+/* 可拖动芯片 */
+.draggable-chip{display:inline-block;padding:3px 8px;border:1px solid #3b5a70;border-radius:4px;background:#132838;color:#cde6f0;font-size:12px;cursor:grab;user-select:none;transition:border-color .15s,box-shadow .15s}
+.draggable-chip:hover{border-color:var(--cyan);box-shadow:0 0 8px #21c7d930}
+.draggable-chip.dragging{opacity:.4}
+.draggable-chip:active{cursor:grabbing}
+/* 对局卡片展开详情 */
+.match-toggle{cursor:pointer}.match-detail{margin-top:10px;padding-top:10px;border-top:1px solid #203848}
+.match-detail .table-wrap{max-height:320px}
+.match-detail th,.match-detail td{padding:5px 8px;font-size:12px}
+.match-detail tr.blue td:first-child{color:#76daf0}.match-detail tr.red td:first-child{color:#ff8590}
 .toast{position:fixed;left:50%;bottom:22px;z-index:110;max-width:min(560px,90vw);padding:10px 16px;border:1px solid #36566a;border-radius:9px;background:#132532;color:#eaf4f7;text-align:center;opacity:0;pointer-events:none;transform:translate(-50%,20px);transition:.25s}.toast.show{opacity:1;transform:translate(-50%,0)}
 @media(max-width:1100px){.battle-layout{grid-template-columns:1fr 1fr;grid-template-areas:"left right" "results results"}.rank-grid,.admin-grid{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:760px){.app{width:min(100% - 18px,620px);padding-top:15px}.hero{align-items:flex-start;flex-direction:column}.main-nav{overflow:auto}.toolbar,.section-head{align-items:flex-start;flex-direction:column}.setup,.results{grid-template-columns:1fr}.summary-grid{grid-template-columns:1fr 1fr}.match-main{grid-template-columns:1fr}.match-team.red{text-align:left}.match-team.red .lineup-mini{justify-content:flex-start}.versus{text-align:left}.inline-form{grid-template-columns:1fr 90px}.inline-form button{grid-column:1/-1}.dialog-grid{grid-template-columns:1fr}.dialog-grid .full{grid-column:auto}.filters{width:100%}.filters>*{flex:1}.card{height:90px}.portrait{width:66px;height:66px;flex-basis:66px}}

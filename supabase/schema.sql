@@ -25,21 +25,19 @@ create table if not exists public.players (
 
 create table if not exists public.matches (
   id uuid primary key default gen_random_uuid(),
-  schema_version integer not null default 1,
   played_at timestamptz not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   created_by uuid not null references auth.users(id),
-  submitted_by_player_id uuid references public.players(id),
-  submitted_by_name text,
   winner text not null check (winner in ('blue', 'red')),
-  score jsonb not null default '{"blue": null, "red": null}'::jsonb,
+  duration_seconds integer,
+  game_id text,
+  game_mode text,
+  source text,
   note text not null default '' check (char_length(note) <= 500),
-  teams jsonb not null,
-  lineup jsonb not null,
-  bans jsonb not null,
-  options jsonb not null,
-  data_version jsonb not null
+  blue_team text not null default '蓝方',
+  red_team text not null default '红方',
+  participants jsonb not null
 );
 
 create index if not exists matches_played_at_desc_idx
@@ -78,13 +76,9 @@ set search_path = ''
 as $$
 begin
   if new.id is distinct from old.id
-    or new.schema_version is distinct from old.schema_version
     or new.created_by is distinct from old.created_by
-    or new.teams is distinct from old.teams
-    or new.lineup is distinct from old.lineup
-    or new.bans is distinct from old.bans
-    or new.options is distinct from old.options
-    or new.data_version is distinct from old.data_version
+    or new.game_id is distinct from old.game_id
+    or new.participants is distinct from old.participants
     or new.created_at is distinct from old.created_at
   then
     raise exception 'match snapshot fields are immutable';
