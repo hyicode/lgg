@@ -36,8 +36,6 @@ const state = {
   submitted: false,
   collectedMatch: null,
   matchedParticipants: new Map(),
-  manualGame: null,
-  manualPlayerMap: [],
   collectorNeedsInstall: false,
   historyPage: 1,
   setupRestored: false,
@@ -224,7 +222,8 @@ function selectPlayerSuggestion(input, playerId) {
   input.value = player.displayName;
   input.dataset.playerId = player.id;
   input.setCustomValidity("");
-  input.closest(".player-row").querySelector(".cost-input").value = formatNumber(player.defaultCost);
+  const costInput = input.closest(".player-row")?.querySelector(".cost-input");
+  if (costInput) costInput.value = formatNumber(player.defaultCost);
   hidePlayerSuggestions(input);
   updateCostTotals();
   saveLocalSetup();
@@ -719,7 +718,11 @@ async function refreshCollectorConnection() {
     if (!state.collectedMatch) $("#collectorStatus").textContent = "采集器已连接，可以读取客户端数据。";
     return true;
   }
-  if (!state.collectedMatch) $("#collectorStatus").textContent = "采集器未运行；点击采集数据会自动尝试唤起。";
+  if (!state.collectedMatch) {
+    $("#collectorStatus").textContent = "采集器未运行。";
+    state.collectorNeedsInstall = true;
+    updateCollectorButton();
+  }
   return false;
 }
 
@@ -816,13 +819,21 @@ function renderCollectedMatch() {
   }
 
   // 渲染每行（LGG 选手 + 匹配的参与者或空槽）
-  $("#collectorBody").innerHTML = state.results.map((result) => {
+  const isManualEntry = collection.source?.startsWith("手动录入");
+  $("#collectorBody").innerHTML = state.results.map((result, idx) => {
     const p = getMatchedParticipant(result);
+    const playerCell = result.player.name
+      ? `<strong>${escapeHtml(result.player.name)}</strong>`
+      : `<span class="player-search" style="display:inline-block;min-width:100px">
+           <input class="player-name search-input manual-roster-pick" data-roster-idx="${idx}" maxlength="24" autocomplete="off" placeholder="搜索选手" style="padding:5px 7px;font-size:12px;width:110px">
+           <span class="player-suggestions hidden" role="listbox"></span>
+         </span>`;
+
     if (p) {
       return `
         <tr class="${result.team} matched" data-player-id="${escapeHtml(result.player.id)}">
           <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
-          <td><strong>${escapeHtml(result.player.name)}</strong></td>
+          <td>${playerCell}</td>
           <td class="lane">${escapeHtml(result.laneLabel)}</td>
           <td class="drop-zone" data-player-id="${escapeHtml(result.player.id)}">
             <span class="matched-chip">${escapeHtml(p.accountName || "—")}</span>
@@ -836,10 +847,10 @@ function renderCollectedMatch() {
     return `
       <tr class="${result.team} unmatched" data-player-id="${escapeHtml(result.player.id)}">
         <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
-        <td><strong>${escapeHtml(result.player.name)}</strong></td>
+        <td>${playerCell}</td>
         <td class="lane">${escapeHtml(result.laneLabel)}</td>
         <td class="drop-zone empty" data-player-id="${escapeHtml(result.player.id)}">
-          <span class="drop-hint">⬅ 拖入客户端玩家</span>
+          <span class="drop-hint">🔍 搜索LGG选手</span>
         </td>
         <td>—</td>
         <td class="num">—</td>
@@ -871,6 +882,17 @@ function renderCollectedMatch() {
   // 绑定取消匹配按钮
   $$(".unmatch-btn").forEach((btn) => {
     btn.addEventListener("click", () => unmatchParticipant(btn.dataset.playerId));
+  });
+  // 手动选人：更新 roster
+  $$(".manual-roster-pick").forEach((input) => {
+    input.addEventListener("blur", () => {
+      const idx = parseInt(input.dataset.rosterIdx);
+      const playerId = input.dataset.playerId;
+      if (playerId && playerById(playerId)) {
+        const player = playerById(playerId);
+        state.results[idx].player = { id: player.id, name: player.displayName, cost: player.defaultCost };
+      }
+    });
   });
 
   preview.classList.remove("hidden");
@@ -1054,15 +1076,15 @@ function matchSnapshot() {
         lane: result.lane,
         laneLabel: result.laneLabel,
         champion: {
-          slug: result.champion.slug,
-          name: result.champion.name,
-          weight: Number(result.champion.weight),
-          banRate: Number(result.champion.banRate),
+          slug: championSlug(participant?.championName || ""),
+          name: participant?.championName || "",
+          weight: 0,
+          banRate: 0,
         },
-        ...(participant ? { stats: participant.stats } : {}),
+        ...(participant?.stats ? { stats: participant.stats } : {}),
       };
     }),
-    bans: state.bans.map((hero) => ({ slug: hero.slug, name: hero.name, banRate: Number(hero.banRate) })),
+    bans: [],
   };
 }
 
@@ -1079,7 +1101,7 @@ async function submitMatch(event) {
     const snapshot = matchSnapshot();
     const payload = {
       id: state.draftId,
-      schema_version: state.collectedMatch ? 2 : 1,
+      schema_version: 1,
       played_at: playedAt.toISOString(),
       created_by: state.user.id,
       winner,
@@ -1138,52 +1160,11 @@ async function submitMatch(event) {
 
 // ---- 手动录入历史对局 ----
 
-function renderManualSlots(side) {
-  const container = $(`#manual${side === "blue" ? "Blue" : "Red"}Slots`);
-  container.innerHTML = "";
-  for (let i = 1; i <= 5; i++) {
-    container.insertAdjacentHTML("beforeend", `
-      <label class="player-row">
-        <span class="number">0${i}</span>
-        <span class="player-search">
-          <input class="player-name search-input" data-side="manual-${side}" data-slot="${i - 1}" maxlength="24" autocomplete="off" placeholder="搜索选手 ${i}" aria-label="${side === "blue" ? "蓝方" : "红方"}选手 ${i}">
-          <span class="player-suggestions hidden" role="listbox"></span>
-        </span>
-        <input class="manual-champion" type="text" maxlength="20" placeholder="英雄(选填)" aria-label="选手 ${i} 英雄">
-      </label>`);
-  }
-}
-
 function openManualMatchDialog() {
-  $("#manualMatchForm").reset();
-  $("#manualMatchError").textContent = "";
-  $("#manualPlayedAt").value = localDateTimeValue();
   $("#manualCollectorStatus").textContent = "点击按钮选择最近的自定义对局";
   $("#recentGamesList").classList.add("hidden");
   $("#recentGamesList").innerHTML = "";
-  state.manualGame = null;
-  state.manualPlayerMap = [];
-  renderManualTeams();
   $("#manualMatchDialog").showModal();
-}
-
-function renderManualTeams() {
-  const game = state.manualGame;
-  const preview = $("#manualGamePreview");
-  const slots = $("#manualTeamSlots");
-
-  if (game && game.participants?.length >= 2) {
-    // 有选中的对局 → 显示匹配表格
-    slots.classList.add("hidden");
-    preview.classList.remove("hidden");
-    renderManualGamePreview(game);
-  } else {
-    // 没有对局 → 显示手动输入 slots
-    preview.classList.add("hidden");
-    slots.classList.remove("hidden");
-    renderManualSlots("blue");
-    renderManualSlots("red");
-  }
 }
 
 async function fetchRecentGames() {
@@ -1195,7 +1176,8 @@ async function fetchRecentGames() {
   try {
     if (!await collectorIsRunning()) {
       if (!await tryStartCollector()) {
-        status.textContent = "采集器未运行，请先启动采集桥。";
+        status.textContent = "采集器未运行。";
+        status.insertAdjacentHTML("afterend", '<button class="ghost" style="margin-top:6px" onclick="downloadCollectorInstaller()">下载安装采集器</button>');
         return;
       }
     }
@@ -1237,217 +1219,91 @@ function renderRecentGames(games) {
   });
 }
 
-function renderManualGamePreview(game) {
-  const participants = game.participants || [];
-  const map = state.manualPlayerMap;
-
-  // 确保 mapping 数组长度匹配
-  while (map.length < participants.length) map.push({ playerId: "", playerName: "" });
-
-  const rows = participants.map((p, i) => {
-    const matched = map[i];
-    return `
-      <tr class="${p.team || ""}">
-        <td>${p.team === "blue" ? "蓝方" : p.team === "red" ? "红方" : "—"}</td>
-        <td class="player-search manual-match-player">
-          <input class="player-name search-input" data-manual-idx="${i}" maxlength="24"
-            autocomplete="off" placeholder="搜索LGG选手"
-            value="${escapeHtml(matched.playerName || p.accountName || "")}">
-          <span class="player-suggestions hidden" role="listbox"></span>
-        </td>
-        <td>${escapeHtml(p.accountName || "—")}</td>
-        <td>${escapeHtml(p.championName || "—")}</td>
-        <td class="num">${p.stats?.kills ?? 0} / ${p.stats?.deaths ?? 0} / ${p.stats?.assists ?? 0}</td>
-        <td class="num">${p.stats?.creepScore ?? 0}</td>
-      </tr>`;
-  }).join("");
-
-  $("#manualGameMeta").textContent = `${game.playedAt ? new Date(game.playedAt).toLocaleString("zh-CN") : ""} · ${game.durationSeconds ? Math.round(game.durationSeconds / 60) + "分钟" : ""}`;
-  $("#manualGameBody").innerHTML = rows;
-
-  // 绑定 player input 事件
-  $$(".manual-match-player .player-name").forEach((input) => {
-    input.addEventListener("input", () => {
-      const idx = parseInt(input.dataset.manualIdx);
-      map[idx] = { playerId: input.dataset.playerId || "", playerName: input.value.trim() };
-    });
-  });
-}
-
 function selectRecentGame(game) {
-  state.manualGame = game;
-  state.manualPlayerMap = [];
-  // 自动匹配：尝试用 accountName 找到 LGG 选手
+  const participants = game.participants || [];
   const players = activePlayers();
-  (game.participants || []).forEach((p) => {
-    const found = players.find((pl) =>
+
+  // 创建伪 Roll 结果
+  const results = [];
+  for (let i = 0; i < participants.length; i++) {
+    const p = participants[i];
+    const team = p.team || (i < 5 ? "blue" : "red");
+    const posIdx = results.filter(r => r.team === team).length;
+    const matchedPlayer = players.find(pl =>
       normalizeName(pl.displayName) === normalizeName(p.accountName) ||
       normalizeName(pl.displayName) === normalizeName(p.accountName?.split("#")[0])
     );
-    state.manualPlayerMap.push({
-      playerId: found?.id || "",
-      playerName: found?.displayName || "",
+    results.push({
+      player: {
+        id: matchedPlayer?.id || `manual-${i}`,
+        name: matchedPlayer?.displayName || p.accountName || `玩家${i + 1}`,
+        cost: matchedPlayer?.defaultCost || 1,
+      },
+      team,
+      lane: LANES[Math.min(posIdx, 4)][0],
+      laneLabel: LANES[Math.min(posIdx, 4)][1],
+      champion: {
+        slug: championSlug(p.championName || ""),
+        name: p.championName || "",
+        weight: 0,
+        banRate: 0,
+      },
+      _participantIdx: i,
     });
+  }
+
+  // 不足 10 人补空位
+  while (results.length < 10) {
+    const team = results.filter(r => r.team === "blue").length < 5 ? "blue" : "red";
+    const posIdx = results.filter(r => r.team === team).length;
+    results.push({
+      player: { id: `manual-empty-${results.length}`, name: "", cost: 1 },
+      team,
+      lane: LANES[Math.min(posIdx, 4)][0],
+      laneLabel: LANES[Math.min(posIdx, 4)][1],
+      champion: { slug: "", name: "", weight: 0, banRate: 0 },
+      _participantIdx: -1,
+    });
+  }
+
+  const collected = {
+    source: "手动录入（客户端采集）",
+    collectedAt: new Date().toISOString(),
+    gameId: game.gameId,
+    playedAt: game.playedAt,
+    durationSeconds: game.durationSeconds,
+    gameMode: game.gameMode,
+    winner: game.winner || "",
+    participants,
+  };
+
+  // 名字预匹配
+  const mp = new Map();
+  participants.forEach((p, i) => {
+    const matched = results.find(r => r._participantIdx === i);
+    if (matched?.player.id && !matched.player.id.startsWith("manual-")) {
+      mp.set(matched.player.id, i);
+    }
   });
 
-  // 自动填时间
+  state.results = results;
+  state.collectedMatch = collected;
+  state.matchedParticipants = mp;
+  state.revealed = 10;
+  state.submitted = false;
+  state.draftId = crypto.randomUUID();
+
+  $("#manualMatchDialog").close();
   if (game.playedAt) {
     const d = new Date(game.playedAt);
-    if (!Number.isNaN(d.getTime())) $("#manualPlayedAt").value = localDateTimeValue(d);
+    if (!Number.isNaN(d.getTime())) $("#playedAt").value = localDateTimeValue(d);
   }
-  // 推断胜方
-  const winner = (game.participants || []).find(p => p.win === true);
-  if (winner?.team) {
-    const radio = $(`input[name="manualWinner"][value="${winner.team}"]`);
+  const winnerP = participants.find(p => p.win === true);
+  if (winnerP?.team) {
+    const radio = $(`input[name="winner"][value="${winnerP.team}"]`);
     if (radio) radio.checked = true;
   }
-
-  $("#manualCollectorStatus").textContent = "已自动匹配，请核对后提交。";
-  $("#recentGamesList").classList.add("hidden");
-  renderManualTeams();
-}
-
-async function submitManualMatch(event) {
-  event.preventDefault();
-  const button = $("#submitManualBtn");
-  const error = $("#manualMatchError");
-  try {
-    const winner = new FormData($("#manualMatchForm")).get("manualWinner");
-    if (!winner) throw new Error("请选择胜方。");
-    const playedAt = new Date($("#manualPlayedAt").value);
-    if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
-
-    let lineup = [];
-    let blueName = "蓝方", redName = "红方";
-    let blueCost = 0, redCost = 0;
-    const game = state.manualGame;
-    const players = activePlayers();
-    const playerByName = new Map(players.map((p) => [normalizeName(p.displayName), p]));
-    const usedIds = new Set();
-
-    if (game && game.participants?.length >= 2) {
-      // 模式1: 从选中对局匹配
-      const map = state.manualPlayerMap;
-      game.participants.forEach((p, i) => {
-        const m = map[i];
-        const inputName = (m?.playerName || "").trim();
-        const player = playerByName.get(normalizeName(inputName));
-        if (!player || !inputName) {
-          // 未匹配的跳过
-          return;
-        }
-        if (usedIds.has(player.id)) throw new Error(`选手"${player.displayName}"重复选择。`);
-        usedIds.add(player.id);
-        const team = p.team || (i < 5 ? "blue" : "red");
-        lineup.push({
-          team,
-          playerId: player.id,
-          playerName: player.displayName,
-          accountName: p.accountName || "",
-          cost: player.defaultCost,
-          lane: team === "red" ? LANES[i % 5 > 4 ? 4 : i % 5][0] : LANES[Math.min(i, 4)][0],
-          laneLabel: team === "red" ? LANES[i % 5 > 4 ? 4 : i % 5][1] : LANES[Math.min(i, 4)][1],
-          champion: p.championName ? { slug: championSlug(p.championName), name: p.championName, weight: 0, banRate: 0 } : { slug: "", name: "", weight: 0, banRate: 0 },
-          ...(p.stats ? { stats: p.stats } : {}),
-        });
-        if (team === "blue") blueCost += player.defaultCost;
-        else redCost += player.defaultCost;
-      });
-      if (lineup.length < 10) throw new Error("请为所有 10 位对局参与者匹配 LGG 选手。");
-    } else {
-      // 模式2: 手动输入
-      const collectTeam = (side) => {
-        const slots = $$(`#manual${side === "blue" ? "Blue" : "Red"}Slots .player-name`);
-        return [...slots].map((input, idx) => {
-          const name = input.value.trim();
-          if (!name) throw new Error(`${side === "blue" ? "蓝方" : "红方"}第 ${idx + 1} 位选手未填写。`);
-          const key = normalizeName(name);
-          const player = playerByName.get(key);
-          if (!player) throw new Error(`未找到选手"${name}"，请从下拉建议中选择。`);
-          if (usedIds.has(player.id)) throw new Error(`选手"${name}"重复选择。`);
-          usedIds.add(player.id);
-          const champInput = input.closest(".player-row").querySelector(".manual-champion");
-          const champName = champInput?.value.trim() || "";
-          return {
-            team: side,
-            playerId: player.id,
-            playerName: player.displayName,
-            accountName: "",
-            cost: player.defaultCost,
-            lane: LANES[idx][0],
-            laneLabel: LANES[idx][1],
-            champion: champName ? { slug: championSlug(champName), name: champName, weight: 0, banRate: 0 } : { slug: "", name: "", weight: 0, banRate: 0 },
-          };
-        });
-      };
-      const blue = collectTeam("blue");
-      const red = collectTeam("red");
-      lineup = [...blue, ...red];
-      blueCost = blue.reduce((s, r) => s + r.cost, 0);
-      redCost = red.reduce((s, r) => s + r.cost, 0);
-      blueName = $("#manualBlueName").value.trim() || "蓝方";
-      redName = $("#manualRedName").value.trim() || "红方";
-    }
-
-    const payload = {
-      id: crypto.randomUUID(),
-      schema_version: state.manualGame ? 2 : 1,
-      played_at: playedAt.toISOString(),
-      created_by: state.user.id,
-      winner,
-      score: { blue: null, red: null },
-      note: $("#manualNote").value.trim(),
-      teams: { blueName, redName, blueTotalCost: blueCost, redTotalCost: redCost },
-      lineup,
-      bans: [],
-      options: { uniqueHeroes: false, sequentialReveal: false },
-      ...(state.manualGame ? {
-        collector: {
-          source: "手动录入（客户端采集）",
-          gameId: state.manualGame.gameId,
-          collectedAt: new Date().toISOString(),
-          durationSeconds: state.manualGame.durationSeconds,
-          gameMode: state.manualGame.gameMode,
-        },
-      } : {}),
-      data_version: {
-        source: state.poolMeta?.source || "OPGG",
-        patch: state.poolMeta?.patch || "",
-        capturedAt: state.poolMeta?.capturedAt || "",
-        generatorVersion: Number(state.poolMeta?.generatorVersion || 0),
-      },
-    };
-
-    button.disabled = true;
-    error.textContent = "";
-    const { error: insertError } = await state.supabase.from("matches").insert(payload);
-    if (insertError) throw insertError;
-    $("#manualMatchDialog").close();
-    toast("历史对局已录入。");
-    await refreshMatches();
-  } catch (caught) {
-    error.textContent = caught.message || "录入失败，请检查网络后重试。";
-  } finally {
-    button.disabled = false;
-  }
-}
-
-function manualBalance(side) {
-  const slots = $$(`#manual${side === "blue" ? "Blue" : "Red"}Slots .player-name`);
-  const usedNames = new Set(
-    $$("#manualBlueSlots .player-name, #manualRedSlots .player-name")
-      .map((inp) => normalizeName(inp.value))
-      .filter(Boolean)
-  );
-  const available = activePlayers().filter((p) => !usedNames.has(normalizeName(p.displayName)));
-  const shuffled = available.sort(() => Math.random() - 0.5);
-  slots.forEach((input, i) => {
-    if (!input.value.trim() && shuffled[i]) {
-      input.value = shuffled[i].displayName;
-      input.dataset.playerId = shuffled[i].id;
-    }
-  });
-  updateCostTotals();
+  openRecordDialog();
 }
 
 function selectedMatches(prefix) {
@@ -1566,13 +1422,15 @@ function renderHeroStats() {
 }
 
 function renderAdmin() {
-  if (!isAdmin()) return;
+  if (!state.member) return;
+  const admin = isAdmin();
   $("#adminPlayerList").innerHTML = state.players.length ? state.players.map((player) => `
     <div class="admin-row">
       <div class="grow"><strong>${escapeHtml(player.displayName)}</strong><small>默认费用 ${formatNumber(player.defaultCost)} · ${player.active ? "启用" : "已停用"}</small></div>
-      <button class="mini" data-edit-player="${player.id}">编辑</button>
-      <button class="mini ${player.active ? "danger" : ""}" data-toggle-player="${player.id}">${player.active ? "停用" : "启用"}</button>
+      ${admin ? `<button class="mini" data-edit-player="${player.id}">编辑</button><button class="mini ${player.active ? "danger" : ""}" data-toggle-player="${player.id}">${player.active ? "停用" : "启用"}</button>` : ""}
     </div>`).join("") : `<div class="empty">还没有选手，请先新增。</div>`;
+  $("#adminMatchSection").classList.toggle("hidden", !admin);
+  if (!admin) return;
   $("#adminMatchList").innerHTML = state.matches.length
     ? state.matches.slice(0, 20).map((match) => `<div class="admin-row"><div class="grow"><strong>${escapeHtml(match.teams?.blueName)} vs ${escapeHtml(match.teams?.redName)}</strong><small>${formatDate(match.playedAt)} · ${scoreLabel(match)}</small></div><button class="mini" data-edit-match="${match.id}">修正</button><button class="mini danger" data-delete-match="${match.id}">删除</button></div>`).join("")
     : `<div class="empty">还没有正式比赛。</div>`;
@@ -1580,7 +1438,6 @@ function renderAdmin() {
 
 async function addPlayer(event) {
   event.preventDefault();
-  if (!isAdmin()) return;
   const name = $("#playerName").value.trim();
   const normalizedName = normalizeName(name);
   const defaultCost = Number($("#playerCost").value);
@@ -1774,7 +1631,7 @@ function showAuthenticatedApp() {
   $("#authGate").classList.add("hidden");
   $("#app").classList.remove("hidden");
   $("#accountLabel").textContent = `${state.member.displayName || state.member.role} · ${state.member.role === "admin" ? "管理员" : "公共账号"}`;
-  $$(".admin-only").forEach((element) => element.classList.toggle("hidden", !isAdmin()));
+  $$(".member-only").forEach((element) => element.classList.toggle("hidden", !state.member));
   startSharedListeners();
   loadPools();
 }
@@ -1865,7 +1722,7 @@ async function initializeSupabase() {
 }
 
 function switchView(viewId) {
-  if (viewId === "adminView" && !isAdmin()) return;
+  if (viewId === "adminView" && !state.member) return;
   $$(".view").forEach((view) => view.classList.toggle("hidden", view.id !== viewId));
   $$(".nav-btn").forEach((button) => button.classList.toggle("active", button.dataset.view === viewId));
   if (viewId === "historyView") renderHistory();
@@ -1907,13 +1764,8 @@ function bindEvents() {
   $("#resetBtn").addEventListener("click", resetSetup);
   $("#recordForm").addEventListener("submit", submitMatch);
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
-  $("#manualMatchForm").addEventListener("submit", submitManualMatch);
   $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
   $("#manualCollectBtn").addEventListener("click", fetchRecentGames);
-  document.addEventListener("click", (event) => {
-    const btn = event.target.closest(".manual-balance");
-    if (btn) manualBalance(btn.dataset.side);
-  });
   $$("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog").close());
   });

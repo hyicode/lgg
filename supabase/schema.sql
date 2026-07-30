@@ -224,6 +224,12 @@ to authenticated
 using (public.is_admin())
 with check (public.is_admin());
 
+drop policy if exists "players inserted by members" on public.players;
+create policy "players inserted by members"
+on public.players for insert
+to authenticated
+with check (public.is_active_member());
+
 drop policy if exists "matches read by members" on public.matches;
 create policy "matches read by members"
 on public.matches for select
