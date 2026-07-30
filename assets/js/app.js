@@ -809,7 +809,7 @@ function renderCollectedMatch() {
   const duration = collection.durationSeconds ? `${Math.round(collection.durationSeconds / 60)} 分钟` : "时长未知";
   const matchedCount = state.matchedParticipants.size;
   const totalNeeded = state.results.length;
-  $("#collectorStatus").textContent = `已匹配 ${matchedCount} / ${totalNeeded} 名选手，请将未匹配的拖入对应行。`;
+  $("#collectorStatus").textContent = `已匹配 ${matchedCount} / ${totalNeeded} 名选手，请核对 LGG 选手和分路后提交。`;
   $("#collectorMeta").textContent = `${collection.source} · ${duration}${collection.gameId ? ` · 对局 ${collection.gameId}` : ""}`;
 
   // 已使用的参与者索引
@@ -818,54 +818,47 @@ function renderCollectedMatch() {
     if (typeof match === "number") usedIndices.add(match);
   }
 
-  // 渲染每行（LGG 选手 + 匹配的参与者或空槽）
-  const isManualEntry = collection.source?.startsWith("手动录入");
+  // 渲染每行：客户端玩家数据固定显示，LGG选手和分路可调整
   $("#collectorBody").innerHTML = state.results.map((result, idx) => {
-    const p = getMatchedParticipant(result);
+    const clientPlayer = result._clientPlayer || "";
+    const clientChamp = result._clientChampion || result.champion?.name || "";
+    const clientKDA = result._clientKDA || "";
+    const clientCS = result._clientCS || 0;
+
+    // LGG 选手列
     const playerCell = result.player.name
       ? `<strong>${escapeHtml(result.player.name)}</strong>`
-      : `<span class="player-search" style="display:inline-block;min-width:100px">
-           <input class="player-name search-input manual-roster-pick" data-roster-idx="${idx}" maxlength="24" autocomplete="off" placeholder="搜索选手" style="padding:5px 7px;font-size:12px;width:110px">
+      : `<span class="player-search" style="display:inline-block">
+           <input class="player-name search-input manual-roster-pick" data-roster-idx="${idx}" maxlength="24" autocomplete="off" placeholder="搜索选手" style="padding:4px 6px;font-size:12px;width:100px">
            <span class="player-suggestions hidden" role="listbox"></span>
          </span>`;
 
-    if (p) {
-      return `
-        <tr class="${result.team} matched" data-player-id="${escapeHtml(result.player.id)}">
-          <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
-          <td>${playerCell}</td>
-          <td class="lane">${escapeHtml(result.laneLabel)}</td>
-          <td class="drop-zone" data-player-id="${escapeHtml(result.player.id)}">
-            <span class="matched-chip">${escapeHtml(p.accountName || "—")}</span>
-            <button class="unmatch-btn" type="button" data-player-id="${escapeHtml(result.player.id)}" title="取消匹配">×</button>
-          </td>
-          <td>${escapeHtml(p.championName || result.champion.name)}</td>
-          <td class="num">${p.stats.kills} / ${p.stats.deaths} / ${p.stats.assists}</td>
-          <td class="num">${p.stats.creepScore}</td>
-        </tr>`;
-    }
+    // 分路选择
+    const laneSelect = `
+      <select class="lane-select" data-roster-idx="${idx}" style="font-size:11px;padding:3px 4px;border:1px solid #294557;border-radius:5px;background:#07131d;color:var(--text)">
+        ${LANES.map(([val, label]) => `<option value="${val}" ${result.lane === val ? "selected" : ""}>${label}</option>`).join("")}
+      </select>`;
+
     return `
-      <tr class="${result.team} unmatched" data-player-id="${escapeHtml(result.player.id)}">
+      <tr class="${result.team}">
         <td>${result.team === "blue" ? "蓝方" : "红方"}</td>
         <td>${playerCell}</td>
-        <td class="lane">${escapeHtml(result.laneLabel)}</td>
-        <td class="drop-zone empty" data-player-id="${escapeHtml(result.player.id)}">
-          <span class="drop-hint">🔍 搜索LGG选手</span>
-        </td>
-        <td>—</td>
-        <td class="num">—</td>
-        <td class="num">—</td>
+        <td>${laneSelect}</td>
+        <td>${escapeHtml(clientPlayer || "—")}</td>
+        <td>${escapeHtml(clientChamp || "—")}</td>
+        <td class="num">${clientKDA || "—"}</td>
+        <td class="num">${clientCS || "—"}</td>
       </tr>`;
   }).join("");
 
   // 渲染未匹配的参与者卡片池
+  // 渲染未匹配的参与者卡片池（仅普通采集模式使用）
   const unmatchedCards = $("#unmatchedCards");
   const unmatchedParticipants = participants.filter((_, i) => !usedIndices.has(i));
   const pool = $("#unmatchedPool");
-  if (unmatchedParticipants.length === 0) {
-    pool.classList.add("hidden");
-  } else {
-    pool.classList.remove("hidden");
+  const isManualEntry = collection.source?.startsWith("手动录入");
+  pool.classList.toggle("hidden", isManualEntry || unmatchedParticipants.length === 0);
+  if (!isManualEntry && unmatchedParticipants.length) {
     unmatchedCards.innerHTML = unmatchedParticipants.map((p, i) => {
       const origIdx = participants.indexOf(p);
       return `
@@ -877,12 +870,9 @@ function renderCollectedMatch() {
     }).join("");
   }
 
-  // 绑定拖拽事件
-  bindDragEvents();
-  // 绑定取消匹配按钮
-  $$(".unmatch-btn").forEach((btn) => {
-    btn.addEventListener("click", () => unmatchParticipant(btn.dataset.playerId));
-  });
+  // 绑定拖拽事件（仅普通采集模式）
+  if (!isManualEntry) bindDragEvents();
+
   // 手动选人：更新 roster
   $$(".manual-roster-pick").forEach((input) => {
     input.addEventListener("blur", () => {
@@ -891,6 +881,19 @@ function renderCollectedMatch() {
       if (playerId && playerById(playerId)) {
         const player = playerById(playerId);
         state.results[idx].player = { id: player.id, name: player.displayName, cost: player.defaultCost };
+      }
+    });
+  });
+
+  // 分路选择：更新 results
+  $$(".lane-select").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const idx = parseInt(sel.dataset.rosterIdx);
+      const laneVal = sel.value;
+      const laneEntry = LANES.find(l => l[0] === laneVal);
+      if (laneEntry && state.results[idx]) {
+        state.results[idx].lane = laneEntry[0];
+        state.results[idx].laneLabel = laneEntry[1];
       }
     });
   });
@@ -1181,14 +1184,39 @@ async function fetchRecentGames() {
         return;
       }
     }
-    const data = await collectorRequest("/recent-games", 10_000);
-    if (!data.games?.length) {
-      status.textContent = "没有找到自定义对局。";
-      list.classList.add("hidden");
+    // 1. 获取最近对局列表
+    const listData = await collectorRequest("/proxy/lcu/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=20", 8000);
+    const games = listData?.games?.games || [];
+    if (!games.length) {
+      status.textContent = "没有找到对局记录。";
       return;
     }
-    status.textContent = `找到 ${data.games.length} 场自定义对局，点击选择：`;
-    renderRecentGames(data.games);
+
+    // 2. 过滤自定义对局，逐个拉详情
+    const customGames = games.filter(g => g.gameType === "CUSTOM_GAME" || g.gameType === "PRACTICE_GAME");
+    if (!customGames.length) {
+      status.textContent = "没有找到自定义对局。";
+      return;
+    }
+
+    status.textContent = `找到 ${customGames.length} 场自定义对局，正在拉取详情…`;
+    const detailedGames = [];
+    for (const g of customGames) {
+      try {
+        const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${g.gameId}`, 8000);
+        const normalized = normalizeLcuGameDetail(detail);
+        if (normalized && normalized.participants.length >= 5) {
+          detailedGames.push(normalized);
+        }
+      } catch { /* skip failed details */ }
+    }
+
+    if (!detailedGames.length) {
+      status.textContent = "对局详情获取失败。";
+      return;
+    }
+    status.textContent = `找到 ${detailedGames.length} 场自定义对局，点击选择：`;
+    renderRecentGames(detailedGames);
   } catch (caught) {
     status.textContent = `读取失败：${caught.message}`;
   } finally {
@@ -1196,18 +1224,76 @@ async function fetchRecentGames() {
   }
 }
 
+// 规范化 LCU 对局详情
+function normalizeLcuGameDetail(raw) {
+  const game = raw?.game || raw;
+  if (!game) return null;
+  // 合并 participantIdentities 到 participants
+  const identities = game.participantIdentities || [];
+  const idMap = new Map();
+  for (const id of identities) {
+    const pid = id?.participantId;
+    if (pid && id.player) idMap.set(pid, id.player);
+  }
+  const participants = (game.participants || []).map(p => {
+    const player = idMap.get(p.participantId) || {};
+    const stats = p.stats || {};
+    return {
+      team: (p.teamId === 100 || p.team === "ORDER" || p.team === "BLUE") ? "blue" : "red",
+      accountName: player.summonerName || player.gameName ||
+        (player.riotIdGameName && player.riotIdTagLine ? `${player.riotIdGameName}#${player.riotIdTagLine}` : "") ||
+        player.riotId || "",
+      championName: p.championName || player.championName || "",
+      championId: p.championId || 0,
+      stats: stats,
+      win: stats.win === true || stats.win === "Win" || p.win === true || p.win === "Win",
+    };
+  }).filter(p => p.accountName || p.championId);
+
+  // 去重
+  const seen = new Set();
+  const unique = participants.filter(p => {
+    const key = `${p.team}|${p.accountName}|${p.championId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // 从 teams 推断胜方
+  let winner = "";
+  const teams = game.teams || [];
+  for (const t of teams) {
+    const won = t.win === "Win" || t.win === true || t.isWinningTeam === true;
+    if (won) {
+      winner = (t.teamId === 100 || t.team === "ORDER" || t.team === "BLUE") ? "blue" : "red";
+      break;
+    }
+  }
+
+  return {
+    gameId: String(game.gameId || game.id || ""),
+    playedAt: game.gameCreationDate || (game.gameCreation ? new Date(game.gameCreation).toISOString() : ""),
+    durationSeconds: game.gameDuration || game.gameLength || 0,
+    gameMode: game.gameMode || "",
+    gameType: game.gameType || "",
+    winner,
+    participants: unique,
+  };
+}
+
 function renderRecentGames(games) {
   const list = $("#recentGamesList");
   list.classList.remove("hidden");
   list.innerHTML = games.map((game, idx) => {
     const dur = game.durationSeconds ? `${Math.round(game.durationSeconds / 60)}分钟` : "时长未知";
-    const blue = (game.participants || []).filter(p => p.team === "blue");
-    const red = (game.participants || []).filter(p => p.team === "red");
+    const blue = game.participants.filter(p => p.team === "blue");
+    const red = game.participants.filter(p => p.team === "red");
     const names = (p) => escapeHtml(p.accountName || p.championName || "?");
+    const countStr = `蓝${blue.length}人 红${red.length}人`;
     return `
       <button type="button" class="recent-game-item" data-game-idx="${idx}">
         <span class="rg-time">${game.playedAt ? new Date(game.playedAt).toLocaleString("zh-CN") : "时间未知"}</span>
-        <span class="rg-dur">${dur}</span>
+        <span class="rg-dur">${dur} · ${countStr}</span>
         <span class="rg-teams">
           <span class="rg-blue">蓝: ${blue.map(names).join(", ") || "—"}</span>
           <span class="rg-red">红: ${red.map(names).join(", ") || "—"}</span>
@@ -1223,20 +1309,23 @@ function selectRecentGame(game) {
   const participants = game.participants || [];
   const players = activePlayers();
 
-  // 创建伪 Roll 结果
+  // 为每个客户端玩家创建一行（不足10行补空）
   const results = [];
-  for (let i = 0; i < participants.length; i++) {
-    const p = participants[i];
+  for (let i = 0; i < Math.max(participants.length, 10); i++) {
+    const p = participants[i] || {};
     const team = p.team || (i < 5 ? "blue" : "red");
     const posIdx = results.filter(r => r.team === team).length;
-    const matchedPlayer = players.find(pl =>
-      normalizeName(pl.displayName) === normalizeName(p.accountName) ||
-      normalizeName(pl.displayName) === normalizeName(p.accountName?.split("#")[0])
-    );
+    const matchedPlayer = p.accountName
+      ? players.find(pl =>
+          normalizeName(pl.displayName) === normalizeName(p.accountName) ||
+          normalizeName(pl.displayName) === normalizeName(p.accountName?.split("#")[0])
+        )
+      : null;
+
     results.push({
       player: {
         id: matchedPlayer?.id || `manual-${i}`,
-        name: matchedPlayer?.displayName || p.accountName || `玩家${i + 1}`,
+        name: matchedPlayer?.displayName || "",
         cost: matchedPlayer?.defaultCost || 1,
       },
       team,
@@ -1248,21 +1337,11 @@ function selectRecentGame(game) {
         weight: 0,
         banRate: 0,
       },
+      _clientPlayer: p.accountName || `玩家${i + 1}`,
+      _clientChampion: p.championName || "",
+      _clientKDA: p.stats ? `${p.stats.kills || 0}/${p.stats.deaths || 0}/${p.stats.assists || 0}` : "",
+      _clientCS: p.stats?.creepScore || p.stats?.minionsKilled || 0,
       _participantIdx: i,
-    });
-  }
-
-  // 不足 10 人补空位
-  while (results.length < 10) {
-    const team = results.filter(r => r.team === "blue").length < 5 ? "blue" : "red";
-    const posIdx = results.filter(r => r.team === team).length;
-    results.push({
-      player: { id: `manual-empty-${results.length}`, name: "", cost: 1 },
-      team,
-      lane: LANES[Math.min(posIdx, 4)][0],
-      laneLabel: LANES[Math.min(posIdx, 4)][1],
-      champion: { slug: "", name: "", weight: 0, banRate: 0 },
-      _participantIdx: -1,
     });
   }
 
@@ -1274,10 +1353,25 @@ function selectRecentGame(game) {
     durationSeconds: game.durationSeconds,
     gameMode: game.gameMode,
     winner: game.winner || "",
-    participants,
+    participants: participants.map(p => ({
+      team: p.team,
+      accountName: p.accountName,
+      championName: p.championName,
+      championId: p.championId,
+      stats: {
+        kills: p.stats?.kills || 0,
+        deaths: p.stats?.deaths || 0,
+        assists: p.stats?.assists || 0,
+        creepScore: p.stats?.creepScore || p.stats?.minionsKilled || 0,
+        goldEarned: p.stats?.goldEarned || 0,
+        visionScore: p.stats?.visionScore || 0,
+        damageDealt: p.stats?.totalDamageDealtToChampions || 0,
+        level: p.stats?.champLevel || 0,
+      },
+    })),
   };
 
-  // 名字预匹配
+  // 预匹配
   const mp = new Map();
   participants.forEach((p, i) => {
     const matched = results.find(r => r._participantIdx === i);
@@ -1298,9 +1392,8 @@ function selectRecentGame(game) {
     const d = new Date(game.playedAt);
     if (!Number.isNaN(d.getTime())) $("#playedAt").value = localDateTimeValue(d);
   }
-  const winnerP = participants.find(p => p.win === true);
-  if (winnerP?.team) {
-    const radio = $(`input[name="winner"][value="${winnerP.team}"]`);
+  if (game.winner) {
+    const radio = $(`input[name="winner"][value="${game.winner}"]`);
     if (radio) radio.checked = true;
   }
   openRecordDialog();
