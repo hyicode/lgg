@@ -32,8 +32,8 @@ export function computeLeaderboards(matches) {
   const champions = new Map();
 
   for (const match of chronological) {
-    const presentChampions = new Set((match.bans || []).map((hero) => hero.slug));
-    for (const slot of match.lineup || []) {
+    const presentChampions = new Set();
+    for (const slot of match.participants || []) {
       const won = slot.team === match.winner;
       let player = players.get(slot.playerId);
       if (!player) {
@@ -68,15 +68,6 @@ export function computeLeaderboards(matches) {
       champion.picks += 1;
       champion.wins += won ? 1 : 0;
       presentChampions.add(slot.champion.slug);
-    }
-    for (const ban of match.bans || []) {
-      let champion = champions.get(ban.slug);
-      if (!champion) {
-        champion = { slug: ban.slug, name: ban.name, picks: 0, wins: 0, bans: 0, matchesPresent: 0 };
-        champions.set(ban.slug, champion);
-      }
-      champion.name = ban.name || champion.name;
-      champion.bans += 1;
     }
     for (const slug of presentChampions) {
       const champion = champions.get(slug);

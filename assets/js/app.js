@@ -1237,6 +1237,7 @@ async function submitMatch(event) {
       } : {}),
     };
     button.disabled = true;
+    button.textContent = "提交中...";
     error.textContent = "";
     const { error: insertError } = await state.supabase.from("matches").insert(payload);
     if (insertError) throw insertError;
@@ -1261,6 +1262,7 @@ async function submitMatch(event) {
     }
   } finally {
     button.disabled = false;
+    button.textContent = "确认提交";
   }
 }
 
@@ -1412,6 +1414,7 @@ function renderRecentGames(games) {
     const countStr = `蓝${blue.length}人 红${red.length}人`;
     return `
       <button type="button" class="recent-game-item" data-game-idx="${idx}">
+        <span class="rg-num">#${idx + 1}</span>
         <span class="rg-time">${game.playedAt ? new Date(game.playedAt).toLocaleString("zh-CN") : "时间未知"}</span>
         <span class="rg-dur">${dur} · ${countStr}</span>
         <span class="rg-teams">
@@ -1820,7 +1823,7 @@ async function refreshPlayers() {
 async function refreshMatches() {
   const { data, error } = await state.supabase
     .from("matches")
-    .select("id,played_at,created_at,winner,duration_seconds,note,blue_team,red_team")
+    .select("id,played_at,created_at,winner,duration_seconds,note,blue_team,red_team,participants")
     .order("played_at", { ascending: false });
   if (error) {
     toast(`对局读取失败：${error.message}`);
@@ -1861,23 +1864,30 @@ async function loadRiotAccounts() {
   state.riotAccounts = new Map((data || []).map((a) => [a.id, a.account_name]));
 }
 
-// upsertRiotAccounts 将 participants 中的 accountName 写入 riot_accounts 表，并替换为 riotAccountId
+// upsertRiotAccounts 批量写入 riot_accounts，避免逐个请求卡顿
 async function upsertRiotAccounts(participants) {
+  const accounts = participants
+    .filter(p => p.accountName)
+    .map(p => ({
+      account_name: p.accountName,
+      normalized_name: normalizeName(p.accountName),
+    }));
+  if (!accounts.length) return;
+
+  const { data, error } = await state.supabase
+    .from("riot_accounts")
+    .upsert(accounts, { onConflict: "normalized_name" })
+    .select("id, account_name, normalized_name");
+  if (error) return;
+
+  const nameMap = new Map((data || []).map(r => [r.normalized_name, r.id]));
+  for (const row of (data || [])) {
+    state.riotAccounts.set(row.id, row.account_name);
+  }
   for (const p of participants) {
     if (!p.accountName) continue;
-    const normalized = normalizeName(p.accountName);
-    const { data, error } = await state.supabase
-      .from("riot_accounts")
-      .upsert({ account_name: p.accountName, normalized_name: normalized }, { onConflict: "normalized_name" })
-      .select("id")
-      .single();
-    if (error || !data) continue;
-    p.riotAccountId = data.id;
-    // 也更新本地缓存
-    state.riotAccounts.set(data.id, p.accountName);
-  }
-  // 移除冗余的 accountName 字段，统一用 riotAccountId
-  for (const p of participants) {
+    const id = nameMap.get(normalizeName(p.accountName));
+    if (id) p.riotAccountId = id;
     delete p.accountName;
   }
 }
