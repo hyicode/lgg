@@ -1649,16 +1649,26 @@ function renderHeroStats() {
 function renderAdmin() {
   if (!state.member) return;
   const admin = isAdmin();
-  $("#adminPlayerList").innerHTML = state.players.length ? state.players.map((player) => `
+  const playerQuery = ($("#adminPlayerSearch")?.value || "").trim();
+  const players = playerQuery
+    ? state.players.filter(p => fuzzySearch(p.displayName, playerQuery))
+    : state.players;
+  $("#adminPlayerList").innerHTML = players.length ? players.map((player) => `
     <div class="admin-row">
       <div class="grow"><strong>${escapeHtml(player.displayName)}</strong><small>默认费用 ${formatNumber(player.defaultCost)} · ${player.active ? "启用" : "已停用"}</small></div>
       ${admin ? `<button class="mini" data-edit-player="${player.id}">编辑</button><button class="mini ${player.active ? "danger" : ""}" data-toggle-player="${player.id}">${player.active ? "停用" : "启用"}</button>` : ""}
-    </div>`).join("") : `<div class="empty">还没有选手，请先新增。</div>`;
+    </div>`).join("") : `<div class="empty">没有匹配的选手。</div>`;
   $("#adminMatchSection").classList.toggle("hidden", !admin);
   if (!admin) return;
-  $("#adminMatchList").innerHTML = state.matches.length
-    ? state.matches.slice(0, 20).map((match) => `<div class="admin-row"><div class="grow"><strong>${escapeHtml(match.blueTeam)} vs ${escapeHtml(match.redTeam)}</strong><small>${formatDate(match.playedAt)} · ${scoreLabel(match)}</small></div><button class="mini" data-edit-match="${match.id}">修正</button><button class="mini danger" data-delete-match="${match.id}">删除</button></div>`).join("")
-    : `<div class="empty">还没有正式比赛。</div>`;
+  const filteredMatches = filterMatchesByRange(
+    state.matches,
+    $("#adminMatchRange")?.value || "all",
+    $("#adminMatchFrom")?.value || "",
+    $("#adminMatchTo")?.value || "",
+  );
+  $("#adminMatchList").innerHTML = filteredMatches.length
+    ? filteredMatches.map((match) => `<div class="admin-row"><div class="grow"><strong>${escapeHtml(match.blueTeam)} vs ${escapeHtml(match.redTeam)}</strong><small>${formatDate(match.playedAt)} · ${scoreLabel(match)}</small></div><button class="mini" data-edit-match="${match.id}">修正</button><button class="mini danger" data-delete-match="${match.id}">删除</button></div>`).join("")
+    : `<div class="empty">当前时间范围没有正式比赛。</div>`;
 }
 
 async function addPlayer(event) {
@@ -2081,7 +2091,9 @@ function toggleCustomRange(prefix) {
   $(`#${prefix}From`).classList.toggle("hidden", !custom);
   $(`#${prefix}To`).classList.toggle("hidden", !custom);
   state.historyPage = 1;
-  prefix === "history" ? renderHistory() : renderLeaderboard();
+  if (prefix === "history") renderHistory();
+  else if (prefix === "adminMatch") renderAdmin();
+  else renderLeaderboard();
 }
 
 function bindEvents() {
@@ -2212,6 +2224,11 @@ function bindEvents() {
   $("#rankRange").addEventListener("change", () => toggleCustomRange("rank"));
   for (const id of ["historyFrom", "historyTo"]) $(`#${id}`).addEventListener("change", renderHistory);
   for (const id of ["rankFrom", "rankTo", "rankSearch", "minGames"]) $(`#${id}`).addEventListener("input", renderLeaderboard);
+  // 管理页搜索和筛选
+  $("#adminPlayerSearch")?.addEventListener("input", renderAdmin);
+  $("#adminMatchRange")?.addEventListener("change", () => toggleCustomRange("adminMatch"));
+  $("#adminMatchFrom")?.addEventListener("change", renderAdmin);
+  $("#adminMatchTo")?.addEventListener("change", renderAdmin);
   $("#heroStatsBtn").addEventListener("click", () => { renderHeroStats(); $("#heroStatsDialog").showModal(); });
   $("#heroStatsClose").addEventListener("click", () => $("#heroStatsDialog").close());
   $("#heroSearch").addEventListener("input", renderHeroStats);

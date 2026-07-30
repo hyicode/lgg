@@ -134,10 +134,16 @@
             <input id="playerCost" type="number" min="0" step="0.5" value="1" required>
             <button class="primary" type="submit">新增选手</button>
           </form>
+          <input class="search-input" id="adminPlayerSearch" type="search" placeholder="搜索选手…" style="width:100%;margin-bottom:10px">
           <div id="adminPlayerList" class="admin-list"></div>
         </section>
         <section class="panel" id="adminMatchSection">
-          <h3>最近对局</h3>
+          <h3>对局管理</h3>
+          <div class="filters" style="margin-bottom:10px">
+            <select id="adminMatchRange"><option value="all">全部时间</option><option value="30">最近 30 天</option><option value="custom">自定义</option></select>
+            <input class="hidden" id="adminMatchFrom" type="date" aria-label="开始日期">
+            <input class="hidden" id="adminMatchTo" type="date" aria-label="结束日期">
+          </div>
           <div id="adminMatchList" class="admin-list"></div>
         </section>
       </div>
