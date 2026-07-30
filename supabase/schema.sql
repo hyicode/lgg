@@ -28,12 +28,8 @@ create table if not exists public.matches (
   played_at timestamptz not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  created_by uuid not null references auth.users(id),
   winner text not null check (winner in ('blue', 'red')),
   duration_seconds integer,
-  game_id text,
-  game_mode text,
-  source text,
   note text not null default '' check (char_length(note) <= 500),
   blue_team text not null default '蓝方',
   red_team text not null default '红方',
@@ -76,8 +72,6 @@ set search_path = ''
 as $$
 begin
   if new.id is distinct from old.id
-    or new.created_by is distinct from old.created_by
-    or new.game_id is distinct from old.game_id
     or new.participants is distinct from old.participants
     or new.created_at is distinct from old.created_at
   then
@@ -234,7 +228,7 @@ drop policy if exists "matches inserted by members" on public.matches;
 create policy "matches inserted by members"
 on public.matches for insert
 to authenticated
-with check (public.is_active_member() and created_by = auth.uid());
+with check (public.is_active_member());
 
 drop policy if exists "matches updated by admins" on public.matches;
 create policy "matches updated by admins"
@@ -249,10 +243,116 @@ on public.matches for delete
 to authenticated
 using (public.is_admin());
 
-revoke all on public.profiles, public.players, public.matches from anon;
+-- 选手战绩汇总（每提交一场比赛自动更新）
+-- 连胜由前端从 matches 列表计算，不在此表中存储
+create table if not exists public.player_stats (
+  player_id uuid primary key references public.players(id) on delete cascade,
+  games int not null default 0,
+  wins int not null default 0,
+  losses int not null default 0,
+  kills int not null default 0,
+  deaths int not null default 0,
+  assists int not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.player_stats enable row level security;
+
+drop policy if exists "player_stats read by members" on public.player_stats;
+create policy "player_stats read by members"
+on public.player_stats for select
+to authenticated
+using (public.is_active_member());
+
+drop policy if exists "player_stats managed by members" on public.player_stats;
+create policy "player_stats managed by members"
+on public.player_stats for all
+to authenticated
+using (public.is_active_member())
+with check (public.is_active_member());
+
+-- 从所有 matches 的 participants JSONB 中重算全部选手战绩
+create or replace function public.recalc_player_stats()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  rec record;
+begin
+  delete from public.player_stats where true;
+
+  for rec in
+    select
+      (p ->> 'playerId')::uuid as pid,
+      count(*) as games,
+      count(*) filter (where p ->> 'team' = m.winner) as wins,
+      count(*) filter (where p ->> 'team' <> m.winner) as losses,
+      coalesce(sum(((p -> 'stats' ->> 'kills')::int)), 0) as kills,
+      coalesce(sum(((p -> 'stats' ->> 'deaths')::int)), 0) as deaths,
+      coalesce(sum(((p -> 'stats' ->> 'assists')::int)), 0) as assists
+    from public.matches m,
+         jsonb_array_elements(m.participants) p
+    where p ->> 'playerId' is not null
+    group by pid
+  loop
+    insert into public.player_stats (player_id, games, wins, losses, kills, deaths, assists, updated_at)
+    values (rec.pid, rec.games, rec.wins, rec.losses, rec.kills, rec.deaths, rec.assists, now())
+    on conflict (player_id) do update set
+      games = excluded.games, wins = excluded.wins, losses = excluded.losses,
+      kills = excluded.kills, deaths = excluded.deaths, assists = excluded.assists,
+      updated_at = now();
+  end loop;
+end;
+$$;
+
+-- 触发器：matches 变更时自动重算战绩
+create or replace function public.on_match_changed()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.recalc_player_stats();
+  return null;
+end;
+$$;
+
+drop trigger if exists trg_match_changed on public.matches;
+create trigger trg_match_changed
+after insert or update or delete on public.matches
+for each statement execute function public.on_match_changed();
+
+-- 客户端玩家账号（Riot ID），避免在每个 match.participants 中重复存储
+create table if not exists public.riot_accounts (
+  id uuid primary key default gen_random_uuid(),
+  account_name text not null,
+  normalized_name text not null unique,
+  created_at timestamptz not null default now()
+);
+
+alter table public.riot_accounts enable row level security;
+
+drop policy if exists "riot_accounts read by members" on public.riot_accounts;
+create policy "riot_accounts read by members"
+on public.riot_accounts for select
+to authenticated
+using (exists (select 1 from public.profiles where id = auth.uid() and active = true));
+
+drop policy if exists "riot_accounts inserted by members" on public.riot_accounts;
+create policy "riot_accounts inserted by members"
+on public.riot_accounts for insert
+to authenticated
+with check (exists (select 1 from public.profiles where id = auth.uid() and active = true));
+
+revoke all on public.profiles, public.players, public.matches, public.riot_accounts, public.player_stats from anon;
 grant select on public.profiles to authenticated;
 grant select, insert, update, delete on public.players to authenticated;
 grant select, insert, update, delete on public.matches to authenticated;
+grant select, insert on public.riot_accounts to authenticated;
+grant select on public.player_stats to authenticated;
 
 do $$
 begin
@@ -272,6 +372,24 @@ begin
       and tablename = 'matches'
   ) then
     alter publication supabase_realtime add table public.matches;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'riot_accounts'
+  ) then
+    alter publication supabase_realtime add table public.riot_accounts;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'player_stats'
+  ) then
+    alter publication supabase_realtime add table public.player_stats;
   end if;
 end
 $$;

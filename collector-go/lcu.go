@@ -16,9 +16,9 @@ func lcuHTTPClient() *http.Client {
 
 var lcuClientInstance = &http.Client{
 	Transport: &http.Transport{
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-		MaxIdleConns:      4,
-		IdleConnTimeout:   90 * time.Second,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		MaxIdleConns:    4,
+		IdleConnTimeout: 90 * time.Second,
 	},
 	Timeout: 15 * time.Second,
 }

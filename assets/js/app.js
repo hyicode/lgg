@@ -41,6 +41,8 @@ const state = {
   historyPage: 1,
   setupRestored: false,
   realtimeChannel: null,
+  riotAccounts: new Map(),
+  playerStats: new Map(),
 };
 
 function escapeHtml(value = "") {
@@ -221,7 +223,8 @@ function makePlayerInputs(side) {
 }
 
 function hidePlayerSuggestions(input) {
-  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions");
+  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions")
+    || input.parentElement?.querySelector(".player-suggestions");
   if (!suggestions) return;
   suggestions.classList.add("hidden");
   suggestions.innerHTML = "";
@@ -242,7 +245,8 @@ function matchingPlayers(query) {
 }
 
 function renderPlayerSuggestions(input) {
-  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions");
+  const suggestions = input.closest(".player-search")?.querySelector(".player-suggestions")
+    || input.parentElement?.querySelector(".player-suggestions");
   if (!suggestions) return;
   const matches = matchingPlayers(input.value.trim());
   suggestions.innerHTML = matches.length
@@ -264,6 +268,10 @@ function selectPlayerSuggestion(input, playerId) {
   hidePlayerSuggestions(input);
   updateCostTotals();
   saveLocalSetup();
+  // 录入对局界面：立即更新 roster 映射
+  if (input.matches(".manual-roster-pick")) {
+    updateManualRosterPick(input);
+  }
 }
 
 function movePlayerSuggestion(input, direction) {
@@ -833,6 +841,29 @@ function getMatchedParticipant(result) {
   return match;
 }
 
+function updateManualRosterPick(input) {
+  const idx = parseInt(input.dataset.rosterIdx);
+  const playerId = input.dataset.playerId;
+  // 先清除该位置的旧映射
+  for (const [pid, match] of state.matchedParticipants) {
+    if (typeof match === "number" && match === state.results[idx]._participantIdx) {
+      state.matchedParticipants.delete(pid);
+    }
+  }
+  if (playerId && playerById(playerId)) {
+    const player = playerById(playerId);
+    state.results[idx].player = { id: player.id, name: player.displayName, cost: player.defaultCost };
+    // 同步 matchedParticipants，确保提交时能取到客户端 KDA 数据
+    const pIdx = state.results[idx]._participantIdx;
+    if (pIdx != null) state.matchedParticipants.set(player.id, pIdx);
+    const clientName = state.results[idx]._clientPlayer;
+    if (clientName) saveBidirectionalMapping(player.id, clientName);
+  } else if (!input.value.trim()) {
+    state.results[idx].player = { id: "", name: "", cost: 0 };
+  }
+  renderCollectedMatch();
+}
+
 function renderCollectedMatch() {
   const collection = state.collectedMatch;
   const preview = $("#collectorPreview");
@@ -861,13 +892,11 @@ function renderCollectedMatch() {
     const clientChamp = result._clientChampion || result.champion?.name || "";
     const clientKDA = result._clientKDA || "";
 
-    // LGG 选手列（可拖动交换）
-    const playerCell = result.player.name
-      ? `<span class="draggable-chip draggable-player" draggable="true" data-roster-idx="${idx}" title="拖动到其他行交换选手">${escapeHtml(result.player.name)}</span>`
-      : `<span class="player-search" style="display:inline-block">
-           <input class="player-name search-input manual-roster-pick" data-roster-idx="${idx}" maxlength="24" autocomplete="off" placeholder="搜索选手" style="padding:4px 6px;font-size:12px;width:100px">
-           <span class="player-suggestions hidden" role="listbox"></span>
-         </span>`;
+    // LGG 选手列：始终显示搜索框，已选则预填，可随时改选
+    const playerCell = `<span class="player-search" style="display:inline-block">
+         <input class="player-name search-input manual-roster-pick" data-roster-idx="${idx}" maxlength="24" autocomplete="off" placeholder="搜索选手" style="padding:4px 6px;font-size:12px;width:100px">
+         <span class="player-suggestions hidden" role="listbox"></span>
+       </span>`;
 
     // 分路列（可拖动交换）
     const laneCell = `<span class="draggable-chip draggable-lane" draggable="true" data-roster-idx="${idx}" title="拖动到其他行交换分路">${escapeHtml(result.laneLabel)}</span>`;
@@ -905,28 +934,23 @@ function renderCollectedMatch() {
   // 绑定拖拽事件（仅普通采集模式）
   if (!isManualEntry) bindDragEvents();
 
-  // 手动选人：更新 roster + 保存映射
+  // 渲染后：将已选选手名填入输入框
   $$(".manual-roster-pick").forEach((input) => {
-    input.addEventListener("blur", () => {
-      const idx = parseInt(input.dataset.rosterIdx);
-      const playerId = input.dataset.playerId;
-      if (playerId && playerById(playerId)) {
-        const player = playerById(playerId);
-        state.results[idx].player = { id: player.id, name: player.displayName, cost: player.defaultCost };
-        // 保存双向映射
-        const clientName = state.results[idx]._clientPlayer;
-        if (clientName) saveBidirectionalMapping(player.id, clientName);
-        renderCollectedMatch();
-      }
-    });
+    const idx = parseInt(input.dataset.rosterIdx);
+    const player = state.results[idx]?.player;
+    if (player?.name) {
+      input.value = player.name;
+      input.dataset.playerId = player.id;
+    }
   });
 
-  // 拖动交换：选手和分路
-  bindSwapDrag(".draggable-player", (fromIdx, toIdx) => {
-    [state.results[fromIdx].player, state.results[toIdx].player] =
-      [state.results[toIdx].player, state.results[fromIdx].player];
-    renderCollectedMatch();
+  // 手动选人：更新 roster + 保存映射
+  $$(".manual-roster-pick").forEach((input) => {
+    input.addEventListener("blur", () => updateManualRosterPick(input));
+    input.addEventListener("change", () => updateManualRosterPick(input));
   });
+
+  // 分路拖动交换（保留）
   bindSwapDrag(".draggable-lane", (fromIdx, toIdx) => {
     const from = state.results[fromIdx];
     const to = state.results[toIdx];
@@ -1198,10 +1222,11 @@ async function submitMatch(event) {
     const playedAt = new Date($("#playedAt").value);
     if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
     const snapshot = matchSnapshot();
+    // 将 accountName 归一化为 riot_accounts 引用，避免数据冗余
+    await upsertRiotAccounts(snapshot.participants);
     const payload = {
       id: state.draftId,
       played_at: playedAt.toISOString(),
-      created_by: state.user.id,
       winner,
       note: $("#matchNote").value.trim(),
       blue_team: snapshot.blueTeam,
@@ -1209,9 +1234,6 @@ async function submitMatch(event) {
       participants: snapshot.participants,
       ...(state.collectedMatch ? {
         duration_seconds: state.collectedMatch.durationSeconds,
-        game_id: state.collectedMatch.gameId,
-        game_mode: state.collectedMatch.gameMode,
-        source: state.collectedMatch.source,
       } : {}),
     };
     button.disabled = true;
@@ -1515,7 +1537,7 @@ function matchCard(match, includeActions = true) {
       <td>${escapeHtml(slot.laneLabel || "")}</td>
       <td><strong>${escapeHtml(slot.playerName)}</strong></td>
       <td>${escapeHtml(slot.champion?.name || "—")}</td>
-      <td>${escapeHtml(slot.accountName || "—")}</td>
+      <td>${escapeHtml(resolveAccountName(slot) || "—")}</td>
       <td class="num">${slot.stats?.kills ?? 0} / ${slot.stats?.deaths ?? 0} / ${slot.stats?.assists ?? 0}</td>
     </tr>`;
   return `
@@ -1538,7 +1560,6 @@ function matchCard(match, includeActions = true) {
           </table>
         </div>` : `<div class="loading-detail">点击加载详情…</div>`}
         <div class="match-meta">
-          ${match.gameMode ? `<span>模式：${escapeHtml(match.gameMode)}</span>` : ""}
           ${match.durationSeconds ? `<span>时长：${Math.round(match.durationSeconds / 60)}分钟</span>` : ""}
           ${match.note ? `<span class="note">${escapeHtml(match.note)}</span>` : ""}
           ${includeActions && isAdmin() ? `<span class="match-actions"><button class="mini" data-edit-match="${match.id}">修正</button><button class="mini danger" data-delete-match="${match.id}">删除</button></span>` : ""}
@@ -1773,12 +1794,8 @@ function mapMatch(row) {
     playedAt: row.played_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    createdByUid: row.created_by,
     winner: row.winner,
     durationSeconds: row.duration_seconds,
-    gameId: row.game_id,
-    gameMode: row.game_mode,
-    source: row.source,
     note: row.note,
     blueTeam: row.blue_team,
     redTeam: row.red_team,
@@ -1803,7 +1820,7 @@ async function refreshPlayers() {
 async function refreshMatches() {
   const { data, error } = await state.supabase
     .from("matches")
-    .select("id,played_at,created_at,created_by,winner,duration_seconds,game_id,game_mode,source,note,blue_team,red_team")
+    .select("id,played_at,created_at,winner,duration_seconds,note,blue_team,red_team")
     .order("played_at", { ascending: false });
   if (error) {
     toast(`对局读取失败：${error.message}`);
@@ -1821,17 +1838,80 @@ async function fetchMatchDetail(matchId) {
     .eq("id", matchId)
     .single();
   if (error || !data) return null;
-  return data.participants;
+  return resolveParticipantAccounts(data.participants);
+}
+
+// loadPlayerStats 加载选手战绩汇总
+async function loadPlayerStats() {
+  const { data, error } = await state.supabase
+    .from("player_stats")
+    .select("player_id, games, wins, losses, kills, deaths, assists");
+  if (error) return;
+  state.playerStats = new Map((data || []).map(s => [s.player_id, s]));
+}
+
+// ---- riot_accounts 归一化 ----
+
+// loadRiotAccounts 加载全部 riot 账号到本地缓存
+async function loadRiotAccounts() {
+  const { data, error } = await state.supabase
+    .from("riot_accounts")
+    .select("id, account_name");
+  if (error) return;
+  state.riotAccounts = new Map((data || []).map((a) => [a.id, a.account_name]));
+}
+
+// upsertRiotAccounts 将 participants 中的 accountName 写入 riot_accounts 表，并替换为 riotAccountId
+async function upsertRiotAccounts(participants) {
+  for (const p of participants) {
+    if (!p.accountName) continue;
+    const normalized = normalizeName(p.accountName);
+    const { data, error } = await state.supabase
+      .from("riot_accounts")
+      .upsert({ account_name: p.accountName, normalized_name: normalized }, { onConflict: "normalized_name" })
+      .select("id")
+      .single();
+    if (error || !data) continue;
+    p.riotAccountId = data.id;
+    // 也更新本地缓存
+    state.riotAccounts.set(data.id, p.accountName);
+  }
+  // 移除冗余的 accountName 字段，统一用 riotAccountId
+  for (const p of participants) {
+    delete p.accountName;
+  }
+}
+
+// resolveParticipantAccounts 将 participants 中的 riotAccountId 解析为 accountName（用于展示）
+function resolveParticipantAccounts(participants) {
+  if (!Array.isArray(participants)) return participants;
+  for (const p of participants) {
+    if (!p.accountName && p.riotAccountId) {
+      p.accountName = state.riotAccounts.get(p.riotAccountId) || "";
+    }
+  }
+  return participants;
+}
+
+// resolveAccountName 单个 participant 的 accountName 解析
+function resolveAccountName(p) {
+  if (p.accountName) return p.accountName;
+  if (p.riotAccountId) return state.riotAccounts.get(p.riotAccountId) || "";
+  return "";
 }
 
 function startSharedListeners() {
   clearSubscriptions();
   refreshPlayers();
   refreshMatches();
+  loadRiotAccounts();
+  loadPlayerStats();
   state.realtimeChannel = state.supabase
     .channel("lgg-shared-data")
     .on("postgres_changes", { event: "*", schema: "public", table: "players" }, refreshPlayers)
     .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, refreshMatches)
+    .on("postgres_changes", { event: "*", schema: "public", table: "riot_accounts" }, loadRiotAccounts)
+    .on("postgres_changes", { event: "*", schema: "public", table: "player_stats" }, loadPlayerStats)
     .subscribe((status) => {
       if (status === "CHANNEL_ERROR") toast("实时同步连接失败，刷新页面后会重新连接。");
     });
@@ -2052,7 +2132,9 @@ function bindEvents() {
     const option = event.target.closest("[data-player-option]");
     if (!option) return;
     event.preventDefault();
-    const input = option.closest(".player-search").querySelector(".player-name");
+    const input = option.closest(".player-search")?.querySelector(".player-name")
+      || option.parentElement?.querySelector(".player-name");
+    if (!input) return;
     selectPlayerSuggestion(input, option.dataset.playerOption);
   });
   document.addEventListener("keydown", (event) => {
