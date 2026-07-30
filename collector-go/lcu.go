@@ -9,14 +9,18 @@ import (
 	"time"
 )
 
-// lcuHTTPClient 返回可访问 LCU API 的 HTTP 客户端（跳过证书验证）
+// lcuHTTPClient 返回可访问 LCU API 的 HTTP 客户端（跳过证书验证，复用连接池）
 func lcuHTTPClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-		Timeout: 15 * time.Second,
-	}
+	return lcuClientInstance
+}
+
+var lcuClientInstance = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		MaxIdleConns:      4,
+		IdleConnTimeout:   90 * time.Second,
+	},
+	Timeout: 15 * time.Second,
 }
 
 // lcuGet 对 LCU API 发起 GET 请求并解析 JSON

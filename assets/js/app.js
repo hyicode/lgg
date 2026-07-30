@@ -1934,7 +1934,52 @@ async function initializeSupabase() {
 
 function switchView(viewId) {
   if (viewId === "adminView" && !state.member) return;
-  $$(".view").forEach((view) => view.classList.toggle("hidden", view.id !== viewId));
+
+  const currentView = document.querySelector(".view:not(.hidden)");
+  const nextView = document.getElementById(viewId);
+  if (!nextView || nextView === currentView) return;
+
+  // 防止快速切换导致动画堆积
+  if (switchView._busy) return;
+  switchView._busy = true;
+
+  // 尊重系统"减少动效"偏好
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const duration = reducedMotion ? 0 : 160;
+
+  // 淡出当前视图
+  if (currentView) {
+    if (duration > 0) {
+      currentView.style.transition = `opacity ${duration}ms ease, transform ${duration}ms ease`;
+      currentView.style.opacity = "0";
+      currentView.style.transform = "translateY(6px)";
+    }
+    const el = currentView;
+    setTimeout(() => {
+      el.classList.add("hidden");
+      el.style.opacity = "";
+      el.style.transform = "";
+      el.style.transition = "";
+    }, duration);
+  }
+
+  // 淡入新视图
+  nextView.style.opacity = "0";
+  if (duration > 0) nextView.style.transform = "translateY(6px)";
+  nextView.classList.remove("hidden");
+  if (duration > 0) {
+    void nextView.offsetHeight;
+    nextView.style.transition = `opacity ${duration}ms ease, transform ${duration}ms ease`;
+  }
+  nextView.style.opacity = "1";
+  nextView.style.transform = "translateY(0)";
+  setTimeout(() => {
+    nextView.style.opacity = "";
+    nextView.style.transform = "";
+    nextView.style.transition = "";
+    switchView._busy = false;
+  }, duration);
+
   $$(".nav-btn").forEach((button) => button.classList.toggle("active", button.dataset.view === viewId));
   if (viewId === "historyView") renderHistory();
   if (viewId === "leaderboardView") renderLeaderboard();
@@ -2047,8 +2092,16 @@ function bindEvents() {
             // 更新缓存
             const match = state.matches.find(m => m.id === toggleBtn.dataset.matchId);
             if (match) match.participants = participants;
-            // 重新渲染该卡片
+            // 重新渲染该卡片（但保留展开状态）
             renderAllSharedData();
+            // 重新找到新渲染的卡片并展开
+            const newCard = document.querySelector(`.match-toggle[data-match-id="${toggleBtn.dataset.matchId}"]`);
+            if (newCard) {
+              newCard.dataset.loaded = "1";
+              const newDetail = newCard.parentElement.querySelector(`.match-detail[data-match-id="${toggleBtn.dataset.matchId}"]`);
+              if (newDetail) newDetail.classList.remove("hidden");
+            }
+            return;
           }
           toggleBtn.dataset.loaded = "1";
         }

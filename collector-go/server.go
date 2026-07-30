@@ -178,12 +178,12 @@ func (cs *CollectorServer) getCachedClient() (*LeagueClient, error) {
 	return cs.cachedClient, nil
 }
 
-// clearCachedClient 清除缓存的 LCU 客户端（认证失败时调用）
+// clearCachedClient 清除缓存的 LCU 客户端
 func (cs *CollectorServer) clearCachedClient() {
 	cs.clientMu.Lock()
 	defer cs.clientMu.Unlock()
 	if cs.cachedClient != nil {
-		fmt.Fprintf(os.Stderr, "[代理] 认证失败，清除缓存客户端\n")
+		fmt.Fprintf(os.Stderr, "[代理] 清除缓存客户端\n")
 	}
 	cs.cachedClient = nil
 }
@@ -276,21 +276,43 @@ func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request
 
 	// 第一次尝试
 	status := cs.proxyRequest(w, r, targetURL, client.Authorization)
-	if status != 401 && status != 403 && status != 502 {
+	if status != 401 && status != 403 {
 		return
 	}
 
-	// 认证失败或超时，清除缓存并重新发现
-	fmt.Fprintf(os.Stderr, "[代理] LCU 返回 %d，重新发现客户端...\n", status)
+	// 认证失败（token 过期），清除缓存并重新发现，然后重试
+	fmt.Fprintf(os.Stderr, "[代理] LCU 返回 %d（认证失败），重新发现客户端...\n", status)
 	cs.clearCachedClient()
 	client, err = cs.getCachedClient()
 	if err != nil {
-		writeJSON(w, 503, ErrorResponse{Error: fmt.Sprintf("重新发现客户端失败: %s", err.Error())}, origin)
+		// 注意：此时 w 已写入 401/403 响应，不再重复写入
 		return
 	}
 
+	// 用新 token 重试：构造新的 proxy request（w 已在第一次写入，不能再写）
 	targetURL = client.BaseURL + endpoint
-	cs.proxyRequest(w, r, targetURL, client.Authorization)
+	proxyReq, reqErr := http.NewRequest(r.Method, targetURL, http.NoBody)
+	if reqErr != nil {
+		return
+	}
+	proxyReq.Header.Set("Authorization", client.Authorization)
+	resp, respErr := lcuHTTPClient().Do(proxyReq)
+	if respErr != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		return // 重试仍然失败，放弃
+	}
+
+	// 重试成功：向客户端返回实际数据（不能调用 proxyRequest 因为它会再次写 CORS 头）
+	for key, values := range resp.Header {
+		for _, v := range values {
+			w.Header().Add(key, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }
 
 // handleLiveProxy 代理 Live Client Data API 请求
