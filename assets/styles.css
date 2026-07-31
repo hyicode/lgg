@@ -2754,27 +2754,28 @@ dialog::backdrop {
 }
 
 .collector-col-player {
-  width: 24%;
+  width: 22%;
 }
 
 .collector-col-lane {
-  width: 12%;
+  width: 10%;
 }
 
 .collector-col-account {
-  width: 27%;
+  width: 28%;
 }
 
 .collector-col-champion {
-  width: 21%;
+  width: 23%;
 }
 
 .collector-col-kda {
-  width: 16%;
+  width: 17%;
 }
 
 .collector-team-table th {
   position: static;
+  text-align: center;
   color: rgba(184, 214, 225, 0.72);
   background: rgba(5, 24, 34, 0.7);
   font-size: 10px;
@@ -2788,6 +2789,80 @@ dialog::backdrop {
 
 .collector-team-table td {
   height: 44px;
+}
+
+.collector-position-field {
+  display: grid;
+  place-items: center;
+}
+
+.collector-position-field > :not(.lol-position-icon) {
+  display: none;
+}
+
+.collector-participant-cell {
+  padding: 4px 6px;
+}
+
+.collector-participant-block {
+  min-width: 0;
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: minmax(0, 41fr) minmax(0, 33fr) minmax(52px, 26fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid rgba(90, 171, 201, 0.28);
+  border-radius: 6px;
+  color: #eaf9fd;
+  background: rgba(3, 18, 27, 0.82);
+  cursor: grab;
+  user-select: none;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.collector-team-panel.red .collector-participant-block {
+  border-color: rgba(221, 102, 115, 0.28);
+  background: rgba(29, 10, 16, 0.78);
+}
+
+.collector-participant-block[draggable="false"] {
+  cursor: default;
+}
+
+.collector-participant-block[draggable="true"]:hover {
+  border-color: rgba(118, 218, 240, 0.62);
+  background: rgba(15, 49, 65, 0.94);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.2);
+  transform: translateY(-1px);
+}
+
+.collector-team-panel.red .collector-participant-block[draggable="true"]:hover {
+  border-color: rgba(255, 133, 145, 0.62);
+  background: rgba(62, 20, 29, 0.94);
+}
+
+.collector-participant-block.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+  box-shadow: none;
+  transform: none;
+}
+
+.collector-team-table tr.drag-over td {
+  background: rgba(44, 184, 211, 0.12);
+}
+
+.collector-team-panel.red .collector-team-table tr.drag-over td {
+  background: rgba(224, 83, 102, 0.12);
+}
+
+.collector-participant-block > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .collector-team-table tbody tr:last-child td {
@@ -3016,6 +3091,33 @@ tr.unmatched .lane {
   gap: 6px;
   overflow: auto;
   margin-top: 9px;
+}
+
+.manual-game-id-form {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.manual-game-id-form label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manual-game-id-form input {
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .manual-game-id-form {
+    grid-template-columns: 1fr auto;
+  }
+
+  .manual-game-id-form label {
+    grid-column: 1 / -1;
+  }
 }
 
 .recent-game-item {

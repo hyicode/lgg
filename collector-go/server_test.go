@@ -82,55 +82,39 @@ func TestForwardRequestPreservesRequestData(t *testing.T) {
 	}
 }
 
-func TestProxyRejectsWriteMethodsBeforeDiscovery(t *testing.T) {
+func TestPreflightAllowsRequestedMethodAndHeaders(t *testing.T) {
 	server := NewCollectorServer(defaultConfig(), true)
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/proxy/lcu/lol-match-history/v1/games/123", strings.NewReader("payload"))
-	request.Header.Set("Origin", "http://localhost:2525")
+	request := httptest.NewRequest(http.MethodOptions, "http://127.0.0.1/proxy/lcu/lol-chat/v1/conversations", nil)
+	request.Header.Set("Origin", "https://example.com")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+	request.Header.Set("Access-Control-Request-Headers", "content-type,x-custom-header")
 	recorder := httptest.NewRecorder()
 
 	server.handleLCUProxy(recorder, request)
-	if recorder.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("write proxy status = %d, want 405", recorder.Code)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204", recorder.Code)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Methods"); got != http.MethodPatch {
+		t.Fatalf("allowed method = %q, want PATCH", got)
+	}
+	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got != "content-type,x-custom-header" {
+		t.Fatalf("allowed headers = %q", got)
 	}
 }
 
-func TestProxyRejectsPathsOutsideReadAllowlist(t *testing.T) {
+func TestAnyWebOriginIsAllowed(t *testing.T) {
 	server := NewCollectorServer(defaultConfig(), true)
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/proxy/lcu/lol-chat/v1/conversations", nil)
-	request.Header.Set("Origin", "http://localhost:2525")
-	recorder := httptest.NewRecorder()
+	for _, origin := range []string{"http://localhost:9999", "https://example.com"} {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/health", nil)
+		request.Header.Set("Origin", origin)
+		recorder := httptest.NewRecorder()
 
-	server.handleLCUProxy(recorder, request)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("non-allowlisted proxy status = %d, want 404", recorder.Code)
-	}
-}
-
-func TestUnknownLocalOriginIsRejected(t *testing.T) {
-	server := NewCollectorServer(defaultConfig(), true)
-	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/health", nil)
-	request.Header.Set("Origin", "http://localhost:9999")
-	recorder := httptest.NewRecorder()
-
-	server.handleRequest(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("unknown local origin status = %d, want 403", recorder.Code)
-	}
-}
-
-func TestReadAllowlist(t *testing.T) {
-	allowed := []string{
-		"/proxy/lcu/lol-match-history/v1/products/lol/current-summoner/matches",
-		"/proxy/lcu/lol-match-history/v1/games/123456",
-		"/proxy/lcu/lol-match-history/v1/games/HN1_123456",
-		"/proxy/lcu/lol-game-data/assets/v1/champion-summary.json",
-	}
-	for _, path := range allowed {
-		if !isAllowedLCUPath(path) {
-			t.Errorf("expected allowlisted path: %s", path)
+		server.handleRequest(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("origin %q status = %d, want 200", origin, recorder.Code)
 		}
-	}
-	if isAllowedLCUPath("/proxy/lcu/lol-match-history/v1/games/../../chat") {
-		t.Fatal("path traversal must not be allowlisted")
+		if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != origin {
+			t.Fatalf("allow origin = %q, want %q", got, origin)
+		}
 	}
 }

@@ -432,6 +432,11 @@ function ManualMatchDialog() {
           <div><strong>从客户端采集</strong><small id="manualCollectorStatus">点击按钮选择最近的自定义对局</small></div>
           <button className="ghost" id="manualCollectBtn" type="button">获取对局列表</button>
         </div>
+        <form className="manual-game-id-form" id="manualGameIdForm">
+          <label htmlFor="manualGameIdInput">对局 ID</label>
+          <input id="manualGameIdInput" maxLength={64} placeholder="输入客户端对局 ID" autoComplete="off" required />
+          <button className="ghost" type="submit">读取对局</button>
+        </form>
         <div className="recent-games hidden" id="recentGamesList" />
       </div>
       <div style={{ padding: "0 18px 14px", color: "var(--muted)", fontSize: 13 }}>

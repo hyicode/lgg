@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const proxyVersion = "3.1.0"
+const proxyVersion = "3.2.0"
 
 // CollectorServer 只负责发现本机客户端并透明转发请求。
 // 对局选择、字段解析和业务校验全部由网页完成。
@@ -36,24 +36,12 @@ var proxyHTTPClient = &http.Client{
 	Timeout: 20 * time.Second,
 }
 
-func isAllowedOrigin(origin string, config Config) bool {
-	if origin == "" {
-		return true
-	}
-	for _, allowed := range config.AllowedOrigins {
-		if origin == allowed {
-			return true
-		}
-	}
-	return false
-}
-
 func setCORSHeaders(w http.ResponseWriter, origin string) {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Private-Network", "true")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Cache-Control", "no-store")
 }
 
@@ -92,61 +80,18 @@ func (cs *CollectorServer) touch() {
 func (cs *CollectorServer) allowRequest(w http.ResponseWriter, r *http.Request) bool {
 	cs.touch()
 	origin := r.Header.Get("Origin")
-	if !isAllowedOrigin(origin, cs.config) {
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "该网页来源不允许访问采集代理。"}, "")
-		return false
-	}
-	if r.Method == http.MethodOptions {
+	if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 		setCORSHeaders(w, origin)
+		if requestedHeaders := r.Header.Get("Access-Control-Request-Headers"); requestedHeaders != "" {
+			w.Header().Set("Access-Control-Allow-Headers", requestedHeaders)
+		}
+		if requestedMethod := r.Header.Get("Access-Control-Request-Method"); requestedMethod != "" {
+			w.Header().Set("Access-Control-Allow-Methods", requestedMethod)
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return false
 	}
 	return true
-}
-
-func allowReadOnlyProxy(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return true
-	}
-	w.Header().Set("Allow", "GET, HEAD, OPTIONS")
-	writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "采集代理仅允许只读请求。"}, r.Header.Get("Origin"))
-	return false
-}
-
-func isAllowedLCUPath(path string) bool {
-	switch path {
-	case "/proxy/lcu/lol-match-history/v1/products/lol/current-summoner/matches",
-		"/proxy/lcu/lol-game-data/assets/v1/champion-summary.json":
-		return true
-	}
-	const gamePrefix = "/proxy/lcu/lol-match-history/v1/games/"
-	if !strings.HasPrefix(path, gamePrefix) {
-		return false
-	}
-	gameID := strings.TrimPrefix(path, gamePrefix)
-	if gameID == "" || strings.ContainsAny(gameID, "/\\") {
-		return false
-	}
-	for _, char := range gameID {
-		if (char < '0' || char > '9') && (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && char != '_' && char != '-' {
-			return false
-		}
-	}
-	return true
-}
-
-func isAllowedLivePath(path string) bool {
-	const livePrefix = "/proxy/live/liveclientdata/"
-	if !strings.HasPrefix(path, livePrefix) {
-		return false
-	}
-	endpoint := strings.TrimPrefix(path, livePrefix)
-	switch endpoint {
-	case "allgamedata", "activeplayer", "activeplayername", "playerlist", "playeritems", "eventdata", "gamestats", "scores":
-		return true
-	default:
-		return false
-	}
 }
 
 func (cs *CollectorServer) handleRequest(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +224,7 @@ func requestBody(r *http.Request) ([]byte, error) {
 		return nil, nil
 	}
 	defer r.Body.Close()
-	return io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	return io.ReadAll(r.Body)
 }
 
 func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request) {
@@ -287,13 +232,6 @@ func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request
 		return
 	}
 	origin := r.Header.Get("Origin")
-	if !allowReadOnlyProxy(w, r) {
-		return
-	}
-	if !isAllowedLCUPath(r.URL.Path) {
-		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "该客户端接口不在采集白名单中。"}, origin)
-		return
-	}
 	body, err := requestBody(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "读取代理请求失败。"}, origin)
@@ -348,13 +286,6 @@ func (cs *CollectorServer) handleLiveProxy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	origin := r.Header.Get("Origin")
-	if !allowReadOnlyProxy(w, r) {
-		return
-	}
-	if !isAllowedLivePath(r.URL.Path) {
-		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "该实时接口不在采集白名单中。"}, origin)
-		return
-	}
 	body, err := requestBody(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "读取代理请求失败。"}, origin)

@@ -19,17 +19,28 @@ try {
   $tempLauncher = Join-Path $tempDir "protocol-launcher.cmd"
   $tempStart = Join-Path $tempDir "start-collector.cmd"
 
-  Write-Host "正在下载 Go 版 LGG 本机代理..." -ForegroundColor Cyan
+  Write-Host "Downloading LGG Collector..." -ForegroundColor Cyan
   Invoke-WebRequest -UseBasicParsing "$source/lgg-collector.exe" -OutFile $tempExe
   Invoke-WebRequest -UseBasicParsing "$source/protocol-launcher.cmd" -OutFile $tempLauncher
   Invoke-WebRequest -UseBasicParsing "$source/start-collector.cmd" -OutFile $tempStart
 
-  $oldProcesses = Get-CimInstance Win32_Process -Filter "Name = 'lgg-collector.exe'" -ErrorAction SilentlyContinue
-  foreach ($process in $oldProcesses) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+  $installed = $false
+  for ($attempt = 1; $attempt -le 20 -and -not $installed; $attempt++) {
+    $oldProcesses = Get-CimInstance Win32_Process -Filter "Name = 'lgg-collector.exe'" -ErrorAction SilentlyContinue
+    foreach ($process in $oldProcesses) {
+      Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+      Wait-Process -Id $process.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+    }
+
+    try {
+      Copy-Item -Force $tempExe $exePath
+      $installed = $true
+    } catch [System.IO.IOException] {
+      if ($attempt -eq 20) { throw }
+      Start-Sleep -Milliseconds 200
+    }
   }
 
-  Copy-Item -Force $tempExe $exePath
   Copy-Item -Force $tempLauncher $launcherPath
   Copy-Item -Force $tempStart $startPath
 
@@ -42,9 +53,9 @@ try {
 
   Start-Process -FilePath $exePath -ArgumentList "--on-demand" -WindowStyle Hidden
   Write-Host ""
-  Write-Host "安装完成。Go 本机代理已经启动。" -ForegroundColor Green
-  Write-Host "安装位置：$installDir"
-  Write-Host "现在可以返回 LGG 网页并再次点击采集数据。"
+  Write-Host "Installation complete. LGG Collector is running." -ForegroundColor Green
+  Write-Host "Installed at: $installDir"
+  Write-Host "Return to LGG and collect the match again."
 } finally {
   if (Test-Path $tempDir) {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

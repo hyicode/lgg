@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  assignParticipantsToFixedSlots,
   collectedMatchProblems,
   matchCollectedParticipants,
   normalizeClientPositionKey,
@@ -97,4 +98,32 @@ test("拒绝人数不足、账号重复、位置不完整和错误地图", () =>
   assert.ok(problems.some((problem) => problem.includes("参与者不是 10 人")));
   assert.ok(problems.some((problem) => problem.includes("游戏 ID 重复")));
   assert.ok(problems.some((problem) => problem.includes("缺少有效位置")));
+});
+
+test("历史列表可忽略位置问题但仍校验其他对局数据", () => {
+  const match = completeCollectedMatch();
+  match.participants[0].position = "";
+  match.participants[1].position = "middle";
+  const strictProblems = collectedMatchProblems(match);
+  const historyProblems = collectedMatchProblems(match, { requirePositions: false });
+
+  assert.ok(strictProblems.some((problem) => problem.includes("缺少有效位置")));
+  assert.ok(strictProblems.some((problem) => problem.includes("位置数据不完整或重复")));
+  assert.equal(historyProblems.some((problem) => problem.includes("位置")), false);
+
+  match.participants.pop();
+  assert.ok(collectedMatchProblems(match, { requirePositions: false })
+    .some((problem) => problem.includes("参与者不是 10 人")));
+});
+
+test("固定位置槽保留唯一预测并将重复位置按原顺序补入空槽", () => {
+  const positions = ["jungle", "jungle", "middle", "bottom", "support"];
+  const participants = ["blue", "red"].flatMap((team) =>
+    positions.map((position, index) => ({ team, position, accountName: `${team}-${index}` })));
+  const slots = assignParticipantsToFixedSlots(participants);
+  const blue = slots.filter((slot) => slot.team === "blue");
+
+  assert.deepEqual(blue.map((slot) => slot.position), ["top", "jungle", "middle", "bottom", "support"]);
+  assert.deepEqual(blue.map((slot) => slot.participantIdx), [0, 1, 2, 3, 4]);
+  assert.equal(participants[blue[0].participantIdx].position, "jungle");
 });

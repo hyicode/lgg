@@ -33,6 +33,43 @@ export function normalizeClientTeam(teamId, team = "") {
   return "";
 }
 
+export function assignParticipantsToFixedSlots(participants = []) {
+  return ["blue", "red"].flatMap((team) => {
+    const teamParticipants = participants
+      .map((participant, participantIdx) => ({ participant, participantIdx }))
+      .filter(({ participant }) => participant.team === team);
+    const positionCounts = new Map();
+    for (const { participant } of teamParticipants) {
+      const position = normalizeClientPositionKey(participant.position, participant.lane, participant.role);
+      if (position) positionCounts.set(position, (positionCounts.get(position) || 0) + 1);
+    }
+
+    const assigned = new Map();
+    const usedParticipants = new Set();
+    for (const position of CLIENT_POSITION_KEYS) {
+      if (positionCounts.get(position) !== 1) continue;
+      const entry = teamParticipants.find(({ participant }) =>
+        normalizeClientPositionKey(participant.position, participant.lane, participant.role) === position);
+      if (entry) {
+        assigned.set(position, entry.participantIdx);
+        usedParticipants.add(entry.participantIdx);
+      }
+    }
+
+    const remainingParticipants = teamParticipants
+      .map(({ participantIdx }) => participantIdx)
+      .filter((participantIdx) => !usedParticipants.has(participantIdx));
+    const remainingPositions = CLIENT_POSITION_KEYS.filter((position) => !assigned.has(position));
+    remainingPositions.forEach((position, index) => assigned.set(position, remainingParticipants[index] ?? -1));
+
+    return CLIENT_POSITION_KEYS.map((position) => ({
+      team,
+      position,
+      participantIdx: assigned.get(position) ?? -1,
+    }));
+  });
+}
+
 export function riotIdFromClientPlayer(player = {}) {
   const gameName = String(player.riotIdGameName || player.gameName || "").trim();
   const tagLine = String(player.riotIdTagLine || player.tagLine || "").trim();
@@ -42,7 +79,7 @@ export function riotIdFromClientPlayer(player = {}) {
   return String(player.summonerName || gameName || "").trim();
 }
 
-export function collectedMatchProblems(match, { requireWinner = false } = {}) {
+export function collectedMatchProblems(match, { requireWinner = false, requirePositions = true } = {}) {
   const problems = [];
   const participants = Array.isArray(match?.participants) ? match.participants : [];
   const mapId = Number(match?.mapId || 0);
@@ -65,9 +102,9 @@ export function collectedMatchProblems(match, { requireWinner = false } = {}) {
       return;
     }
     teamCounts[participant.team] += 1;
-    if (!CLIENT_POSITION_KEYS.includes(participant.position)) {
+    if (requirePositions && !CLIENT_POSITION_KEYS.includes(participant.position)) {
       problems.push(`第 ${row} 名参与者缺少有效位置`);
-    } else {
+    } else if (CLIENT_POSITION_KEYS.includes(participant.position)) {
       teamPositions[participant.team].add(participant.position);
     }
     const accountKey = normalize(participant.accountName);
@@ -81,7 +118,7 @@ export function collectedMatchProblems(match, { requireWinner = false } = {}) {
 
   for (const team of ["blue", "red"]) {
     if (teamCounts[team] !== 5) problems.push(`${team === "blue" ? "蓝方" : "红方"}不是 5 人`);
-    if (teamPositions[team].size !== 5) problems.push(`${team === "blue" ? "蓝方" : "红方"}位置数据不完整或重复`);
+    if (requirePositions && teamPositions[team].size !== 5) problems.push(`${team === "blue" ? "蓝方" : "红方"}位置数据不完整或重复`);
   }
   return [...new Set(problems)];
 }

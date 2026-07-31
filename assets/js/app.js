@@ -2,6 +2,7 @@ import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
 import { createSearchForms, fuzzyMatches } from "./search-core.js";
 import {
+  assignParticipantsToFixedSlots,
   championSlug,
   collectedMatchProblems,
   matchCollectedParticipants,
@@ -24,9 +25,11 @@ const LANES = [
 const CACHE_SCHEMA = 10;
 const HISTORY_PAGE_SIZE = 20;
 const COLLECTOR_URL = "http://127.0.0.1:32145";
-const COLLECTOR_PROXY_VERSION = "3.1.0";
+const COLLECTOR_PROXY_VERSION = "3.2.0";
 const searchFormCache = new Map();
 let championIdMap = null; // { championId: { name, alias } }
+let draggedCollectedResultIdx = -1;
+let collectionRevision = 0;
 const DRAW_OPTION_IDS = ["randomTeams", "randomPositions", "randomHeroes", "uniqueHeroes", "globalBp"];
 
 const state = {
@@ -651,11 +654,11 @@ function openPlayerLibrary(row) {
   if (input.matches(".manual-roster-pick")) {
     const idx = Number(input.dataset.rosterIdx);
     const result = state.results[idx];
-    const participant = result ? getMatchedParticipant(result) : null;
-    const gameId = result?._clientPlayer || participant?.accountName || "未知游戏 ID";
-    const clientTeam = participant?.team === "red" ? "红方" : participant?.team === "blue" ? "蓝方" : "队伍未知";
-    const clientPosition = normalizeClientPosition(participant?.position);
-    $("#playerLibrarySlot").innerHTML = `${clientTeam} · ${positionIconMarkup(clientPosition, "picker-position-icon")} · ${escapeHtml(gameId)}，选择实际参赛选手`;
+    const participant = result ? getCollectedParticipant(result) : null;
+    const gameId = participant?.accountName || "未知游戏 ID";
+    const teamLabel = result?.team === "red" ? "红方" : result?.team === "blue" ? "蓝方" : "队伍未知";
+    const position = normalizeClientPosition(result?.position);
+    $("#playerLibrarySlot").innerHTML = `${teamLabel} · ${positionIconMarkup(position, "picker-position-icon")} · ${escapeHtml(gameId)}，选择实际参赛选手`;
     $("#clearPlayerCardBtn").textContent = "取消匹配";
   } else {
     const sideLabel = input.dataset.side === "red" ? "红方" : "蓝方";
@@ -1774,22 +1777,42 @@ function downloadCollectorInstaller() {
   $("#recordError").textContent = "";
 }
 
-function collectedByPlayerId() {
-  const result = new Map();
-  if (!state.collectedMatch) return result;
-  const participants = state.collectedMatch.participants;
-  for (const [playerId, match] of state.matchedParticipants) {
-    const p = typeof match === "number" ? participants[match] : match;
-    result.set(playerId, p);
-  }
-  return result;
+function getCollectedParticipantIndex(result) {
+  if (Number.isInteger(result._participantIdx)) return result._participantIdx;
+  const match = state.matchedParticipants.get(result.player.id);
+  return Number.isInteger(match) ? match : -1;
 }
 
-function getMatchedParticipant(result) {
-  const match = state.matchedParticipants.get(result.player.id);
-  if (match == null) return null;
-  if (typeof match === "number") return state.collectedMatch?.participants?.[match] || null;
-  return match;
+function getCollectedParticipant(result) {
+  const participantIdx = getCollectedParticipantIndex(result);
+  return participantIdx >= 0
+    ? state.collectedMatch?.participants?.[participantIdx] || null
+    : null;
+}
+
+function syncMatchedParticipantsFromSlots() {
+  const matched = new Map();
+  for (const result of state.results) {
+    const playerId = result.player?.id || "";
+    const participantIdx = getCollectedParticipantIndex(result);
+    if (playerById(playerId) && participantIdx >= 0) matched.set(playerId, participantIdx);
+  }
+  state.matchedParticipants = matched;
+}
+
+function swapCollectedParticipants(sourceResultIdx, targetResultIdx) {
+  const source = state.results[sourceResultIdx];
+  const target = state.results[targetResultIdx];
+  if (!source || !target || source.team !== target.team) return;
+  const sourceParticipantIdx = getCollectedParticipantIndex(source);
+  const targetParticipantIdx = getCollectedParticipantIndex(target);
+  if (sourceParticipantIdx < 0 || targetParticipantIdx < 0) return;
+
+  source._participantIdx = targetParticipantIdx;
+  target._participantIdx = sourceParticipantIdx;
+  collectionRevision += 1;
+  syncMatchedParticipantsFromSlots();
+  renderCollectedMatch();
 }
 
 function updateManualRosterPick(input) {
@@ -1798,24 +1821,16 @@ function updateManualRosterPick(input) {
   const result = state.results[idx];
   if (!result) return;
   const previousPlayerId = result.player?.id || "";
-  const previousMatch = state.matchedParticipants.get(previousPlayerId);
-  const participantIdx = Number.isInteger(result._participantIdx)
-    ? result._participantIdx
-    : Number.isInteger(previousMatch) ? previousMatch : null;
-
-  // 先清除该客户端玩家之前对应的选手，保证一对一
-  for (const [pid, match] of state.matchedParticipants) {
-    if (participantIdx != null && typeof match === "number" && match === participantIdx) {
-      state.matchedParticipants.delete(pid);
-    }
-  }
+  const participantIdx = getCollectedParticipantIndex(result);
+  if (participantIdx >= 0) result._participantIdx = participantIdx;
+  collectionRevision += 1;
+  state.matchedParticipants.delete(previousPlayerId);
   if (playerId && playerById(playerId)) {
     const player = playerById(playerId);
     result.player = { id: player.id, name: player.displayName, cost: player.defaultCost };
-    // 同步 matchedParticipants，确保提交时能取到客户端 KDA 数据
-    if (participantIdx != null) state.matchedParticipants.set(player.id, participantIdx);
-    const clientName = result._clientPlayer
-      || (participantIdx != null ? state.collectedMatch?.participants?.[participantIdx]?.accountName : "");
+    const clientName = participantIdx >= 0
+      ? state.collectedMatch?.participants?.[participantIdx]?.accountName || ""
+      : "";
     if (clientName) {
       saveBidirectionalMapping(player.id, clientName);
       toast(`已更新本地映射：${player.displayName} ↔ ${clientName}`);
@@ -1823,6 +1838,7 @@ function updateManualRosterPick(input) {
   } else if (!input.value.trim()) {
     result.player = { id: "", name: "", cost: 0 };
   }
+  syncMatchedParticipantsFromSlots();
   renderCollectedMatch();
 }
 
@@ -1839,7 +1855,7 @@ function renderCollectedMatch() {
   const duration = collection.durationSeconds ? `${Math.round(collection.durationSeconds / 60)} 分钟` : "时长未知";
   const matchedCount = state.matchedParticipants.size;
   const totalNeeded = state.results.length;
-  $("#collectorStatus").textContent = `已匹配 ${matchedCount} / ${totalNeeded} 名选手。队伍、位置、英雄与战绩均来自英雄联盟客户端，请核对选手与游戏 ID 后提交。`;
+  $("#collectorStatus").textContent = `已匹配 ${matchedCount} / ${totalNeeded} 名选手。位置固定为上、野、中、下、辅；可拖动游戏 ID、英雄和 KDA，在同队位置间交换。`;
   $("#collectorMeta").textContent = `${collection.source} · ${duration}${collection.gameId ? ` · 对局 ${collection.gameId}` : ""}`;
 
   // 已使用的参与者索引
@@ -1848,32 +1864,29 @@ function renderCollectedMatch() {
     if (typeof match === "number") usedIndices.add(match);
   }
 
-  // 蓝红双方分别渲染。除选手映射外，所有对局字段均只读取客户端数据。
+  // 蓝红双方固定按上、野、中、下、辅渲染，客户端参与者可在同队槽位间交换。
   const teamRows = { blue: [], red: [] };
   const positionOrder = new Map(LANES.map(([key], index) => [key, index]));
   const displayResults = state.results.map((result, idx) => ({ result, idx }));
   displayResults.sort((a, b) => {
-    const aParticipant = getMatchedParticipant(a.result);
-    const bParticipant = getMatchedParticipant(b.result);
-    const aTeam = aParticipant?.team === "red" ? 1 : 0;
-    const bTeam = bParticipant?.team === "red" ? 1 : 0;
+    const aTeam = a.result.team === "red" ? 1 : 0;
+    const bTeam = b.result.team === "red" ? 1 : 0;
     if (aTeam !== bTeam) return aTeam - bTeam;
-    const aPosition = normalizeClientPosition(aParticipant?.position).key;
-    const bPosition = normalizeClientPosition(bParticipant?.position).key;
+    const aPosition = normalizeClientPosition(a.result.position).key;
+    const bPosition = normalizeClientPosition(b.result.position).key;
     return (positionOrder.get(aPosition) ?? 99) - (positionOrder.get(bPosition) ?? 99);
   });
   displayResults.forEach(({ result, idx }) => {
-    const matchedParticipant = getMatchedParticipant(result);
-    const clientPlayer = result._clientPlayer || matchedParticipant?.accountName || "";
-    const clientChamp = result._clientChampion || matchedParticipant?.championName || "";
-    const clientStats = matchedParticipant?.stats;
-    const clientPosition = normalizeClientPosition(matchedParticipant?.position);
-    const displayTeam = matchedParticipant?.team === "blue" || matchedParticipant?.team === "red"
-      ? matchedParticipant.team
-      : result.team;
-    const clientKDA = result._clientKDA || (clientStats
+    const participant = getCollectedParticipant(result);
+    const clientPlayer = participant?.accountName || "";
+    const clientChamp = participant?.championName || "";
+    const clientStats = participant?.stats;
+    const slotPosition = normalizeClientPosition(result.position);
+    const participantIdx = getCollectedParticipantIndex(result);
+    const displayTeam = result.team;
+    const clientKDA = clientStats
       ? `${clientStats.kills || 0}/${clientStats.deaths || 0}/${clientStats.assists || 0}`
-      : "");
+      : "";
 
     // 选手列：点击后打开选手库，适配借用账号后改绑实际参赛者
     const selectedPlayerName = result.player?.name || "";
@@ -1889,24 +1902,29 @@ function renderCollectedMatch() {
         </span>
       </button>`;
 
-    const laneCell = positionIconMarkup(clientPosition, "collector-position-icon");
+    const laneCell = `
+      <span class="collector-position-field">
+        ${positionIconMarkup(slotPosition, "collector-position-icon")}
+      </span>`;
+    const participantCell = `
+      <div class="collector-participant-block" draggable="${participantIdx >= 0}" data-collected-result-idx="${idx}"
+        title="拖动可与同队其他位置交换">
+        <span class="collector-game-id" title="${escapeHtml(clientPlayer)}">${escapeHtml(clientPlayer || "—")}</span>
+        <span class="collector-champion" title="${escapeHtml(clientChamp)}">${escapeHtml(clientChamp || "—")}</span>
+        <span class="num">${clientKDA || "—"}</span>
+      </div>`;
 
     teamRows[displayTeam].push(`
-      <tr class="${displayTeam}" data-player-id="${escapeHtml(result.player?.id || "")}">
+      <tr class="${displayTeam}" data-player-id="${escapeHtml(result.player?.id || "")}" data-result-idx="${idx}" data-team="${displayTeam}">
         <td>${playerCell}</td>
         <td>${laneCell}</td>
-        <td class="collector-game-id" title="${escapeHtml(clientPlayer)}">${escapeHtml(clientPlayer || "—")}</td>
-        <td class="collector-champion" title="${escapeHtml(clientChamp)}">${escapeHtml(clientChamp || "—")}</td>
-        <td class="num">${clientKDA || "—"}</td>
+        <td class="collector-participant-cell" colspan="3">${participantCell}</td>
       </tr>`);
   });
   $("#collectorBlueBody").innerHTML = teamRows.blue.join("");
   $("#collectorRedBody").innerHTML = teamRows.red.join("");
   for (const side of ["blue", "red"]) {
-    const matched = state.results.filter((result) => {
-      const participant = getMatchedParticipant(result);
-      return participant?.team === side;
-    }).length;
+    const matched = state.results.filter((result) => result.team === side && playerById(result.player?.id)).length;
     $(`#collector${side === "blue" ? "Blue" : "Red"}Count`).textContent = `${matched} / 5 已匹配`;
   }
 
@@ -1941,6 +1959,7 @@ function renderCollectedMatch() {
       input.dataset.playerId = player.id;
     }
   });
+  bindCollectedSlotDragEvents();
 
   preview.classList.remove("hidden");
   updateCollectorButton();
@@ -1952,6 +1971,45 @@ function renderCollectedMatch() {
     const playedAt = new Date(collection.playedAt);
     if (!Number.isNaN(playedAt.getTime())) $("#playedAt").value = localDateTimeValue(playedAt);
   }
+}
+
+function bindCollectedSlotDragEvents() {
+  $$(".collector-participant-block[draggable='true']").forEach((block) => {
+    block.addEventListener("dragstart", (event) => {
+      draggedCollectedResultIdx = parseInt(block.dataset.collectedResultIdx, 10);
+      event.dataTransfer.setData("application/x-lgg-collected-result", String(draggedCollectedResultIdx));
+      event.dataTransfer.effectAllowed = "move";
+      block.classList.add("dragging");
+    });
+    block.addEventListener("dragend", () => {
+      draggedCollectedResultIdx = -1;
+      block.classList.remove("dragging");
+      $$(".collector-team-table tr.drag-over").forEach((row) => row.classList.remove("drag-over"));
+    });
+  });
+
+  $$(".collector-team-table tbody tr[data-result-idx]").forEach((row) => {
+    row.addEventListener("dragover", (event) => {
+      const targetResultIdx = parseInt(row.dataset.resultIdx, 10);
+      const source = state.results[draggedCollectedResultIdx];
+      const target = state.results[targetResultIdx];
+      if (!source || !target || source.team !== target.team || draggedCollectedResultIdx === targetResultIdx) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      row.classList.remove("drag-over");
+      const sourceResultIdx = parseInt(event.dataTransfer.getData("application/x-lgg-collected-result"), 10);
+      const targetResultIdx = parseInt(row.dataset.resultIdx, 10);
+      if (Number.isFinite(sourceResultIdx) && Number.isFinite(targetResultIdx)) {
+        swapCollectedParticipants(sourceResultIdx, targetResultIdx);
+      }
+    });
+  });
 }
 
 function unmatchParticipant(playerId) {
@@ -2063,7 +2121,7 @@ async function fetchClientGameDetail(gameId, source, manualGameId = "") {
   const normalized = normalizeLcuGameDetail(detail, champMap);
   if (!normalized) throw new Error("对局详情结构无法识别。");
   const collected = collectedMatchFromClientGame(normalized, source, manualGameId);
-  const problems = collectedMatchProblems(collected);
+  const problems = collectedMatchProblems(collected, { requirePositions: false });
   if (problems.length) throw new Error(`对局数据不完整：${problems.slice(0, 4).join("；")}`);
   return collected;
 }
@@ -2108,6 +2166,8 @@ async function fetchLatestClientMatch() {
 async function collectMatchData() {
   const button = $("#collectMatchBtn");
   const error = $("#recordError");
+  const requestRevision = ++collectionRevision;
+  const previousCollectedMatch = state.collectedMatch;
   if (testModeEnabled()) {
     button.disabled = true;
     try {
@@ -2123,8 +2183,8 @@ async function collectMatchData() {
   try {
     if (!await collectorIsRunning()) {
       if (!await tryStartCollector()) {
-        state.collectedMatch = null;
-        state.matchedParticipants = new Map();
+        state.collectedMatch = previousCollectedMatch;
+        if (!previousCollectedMatch) state.matchedParticipants = new Map();
         state.collectorNeedsInstall = true;
         renderCollectedMatch();
         downloadCollectorInstaller();
@@ -2141,7 +2201,8 @@ async function collectMatchData() {
     const collected = manualGameId
       ? await fetchClientGameDetail(manualGameId, "手动录入（浏览器解析）", manualGameId)
       : await fetchLatestClientMatch();
-    const collectionProblems = collectedMatchProblems(collected);
+    if (requestRevision !== collectionRevision) return;
+    const collectionProblems = collectedMatchProblems(collected, { requirePositions: false });
     if (collectionProblems.length) throw new Error(`采集结果不能使用：${collectionProblems.slice(0, 4).join("；")}`);
     state.collectedMatch = collected;
     // 自动匹配：先用历史映射，再用 score 匹配
@@ -2183,10 +2244,16 @@ async function collectMatchData() {
         }
       }
     }
+    for (const result of state.results) {
+      const participantIdx = state.matchedParticipants.get(result.player.id);
+      if (Number.isInteger(participantIdx)) result._participantIdx = participantIdx;
+    }
+    syncMatchedParticipantsFromSlots();
     renderCollectedMatch();
   } catch (caught) {
-    state.collectedMatch = null;
-    state.matchedParticipants = new Map();
+    if (requestRevision !== collectionRevision) return;
+    state.collectedMatch = previousCollectedMatch;
+    if (!previousCollectedMatch) state.matchedParticipants = new Map();
     renderCollectedMatch();
     const bridgeHint = caught instanceof TypeError || caught.name === "TimeoutError"
       ? "采集器连接中断，请重新启动后再试。"
@@ -2218,20 +2285,19 @@ function handleCollectMatchClick(event) {
 }
 
 function matchSnapshot() {
-  const collected = collectedByPlayerId();
   return {
     blueTeam: $("#blueName").value.trim() || "蓝方",
     redTeam: $("#redName").value.trim() || "红方",
     participants: state.results.map((result) => {
-      const participant = collected.get(result.player.id);
-      const clientPosition = normalizeClientPosition(participant?.position);
+      const participant = getCollectedParticipant(result);
+      const slotPosition = normalizeClientPosition(result.position);
       return {
-        team: participant?.team || "",
+        team: result.team,
         playerId: result.player.id,
         playerName: result.player.name,
         accountName: participant?.accountName || "",
-        position: clientPosition.key,
-        positionLabel: clientPosition.label,
+        position: slotPosition.key,
+        positionLabel: slotPosition.label,
         champion: {
           slug: participant?.championSlug || championSlug(participant?.championAlias || participant?.championName || ""),
           name: participant?.championName || "",
@@ -2245,7 +2311,7 @@ function matchSnapshot() {
 function matchSubmissionProblems(snapshot) {
   const problems = [];
   if (!state.collectedMatch) return ["请先采集并确认客户端对局数据"];
-  problems.push(...collectedMatchProblems(state.collectedMatch));
+  problems.push(...collectedMatchProblems(state.collectedMatch, { requirePositions: false }));
   if (state.results.length !== 10 || snapshot.participants.length !== 10) {
     problems.push("正式比赛必须恰好包含 10 名选手");
   }
@@ -2363,6 +2429,7 @@ function openManualMatchDialog() {
     : "点击按钮选择最近的自定义对局";
   $("#recentGamesList").classList.add("hidden");
   $("#recentGamesList").innerHTML = "";
+  $("#manualGameIdInput").value = "";
   $("#manualMatchDialog").showModal();
   if (testModeEnabled()) showTestRecentGames();
 }
@@ -2403,7 +2470,7 @@ async function fetchRecentGames() {
       .filter(isCustomHistoryGame)
       .sort((a, b) => historyGameTimestamp(b) - historyGameTimestamp(a));
     if (!customGames.length) {
-      status.textContent = "没有找到自定义对局。";
+      status.textContent = `客户端当前返回 ${games.length} 场对局，未包含自定义对局；可输入对局 ID 直接读取。`;
       return;
     }
 
@@ -2416,7 +2483,7 @@ async function fetchRecentGames() {
         if (!gameId) continue;
         const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${encodeURIComponent(gameId)}`, 8000);
         const normalized = normalizeLcuGameDetail(detail, champMap);
-        if (normalized && collectedMatchProblems(normalized).length === 0) {
+        if (normalized && collectedMatchProblems(normalized, { requirePositions: false }).length === 0) {
           detailedGames.push(normalized);
         }
       } catch { /* skip failed details */ }
@@ -2432,6 +2499,31 @@ async function fetchRecentGames() {
     status.textContent = `读取失败：${caught.message}`;
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function fetchRecentGameById(event) {
+  event.preventDefault();
+  const input = $("#manualGameIdInput");
+  const button = event.submitter || event.currentTarget.querySelector("button[type='submit']");
+  const status = $("#manualCollectorStatus");
+  const gameId = input.value.trim();
+  if (!gameId) return;
+
+  button.disabled = true;
+  status.textContent = `正在读取对局 ${gameId}…`;
+  try {
+    if (!await collectorIsRunning() && !await tryStartCollector()) {
+      downloadCollectorInstaller();
+      status.textContent = "未检测到 Go 本机代理，已下载安装器；安装后再次读取。";
+      return;
+    }
+    const game = await fetchClientGameDetail(gameId, "手动录入（对局 ID）", gameId);
+    selectRecentGame(game);
+  } catch (caught) {
+    status.textContent = `读取对局失败：${caught.message}`;
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2563,46 +2655,39 @@ function renderRecentGames(games) {
 
 function selectRecentGame(game) {
   const participants = game.participants || [];
-  const problems = collectedMatchProblems(game);
+  const problems = collectedMatchProblems(game, { requirePositions: false });
   if (problems.length) {
     toast(`该对局不能录入：${problems.slice(0, 4).join("；")}`);
     return;
   }
 
-  // 已通过完整性校验，此处始终严格生成 10 行。
-  const results = [];
-  for (let i = 0; i < participants.length; i++) {
-    const p = participants[i];
-    const team = p.team;
-    const clientPosition = normalizeClientPosition(p.position, p.lane, p.role);
-    const mappedPlayer = p.accountName ? findPlayerByAccount(p.accountName) : null;
-    const testPlayer = game._testData && p.accountName
-      ? playerByName(p.accountName.split("#")[0])
-      : null;
-    const matchedPlayer = mappedPlayer || testPlayer;
-
-    results.push({
-      player: {
-        id: matchedPlayer?.id || `manual-${i}`,
-        name: matchedPlayer?.displayName || "",
-        cost: matchedPlayer?.defaultCost || 1,
-      },
-      team,
-      position: clientPosition.key,
-      positionLabel: clientPosition.label,
-      champion: {
-        slug: p.championSlug || championSlug(p.championAlias || p.championName || ""),
-        name: p.championName || "",
-        weight: 0,
-        banRate: 0,
-      },
-      _clientPlayer: p.accountName || `玩家${i + 1}`,
-      _clientChampion: p.championName || "",
-      _clientKDA: p.stats ? `${p.stats.kills || 0}/${p.stats.deaths || 0}/${p.stats.assists || 0}` : "",
-
-      _participantIdx: i,
+  // 每队固定五个位置槽。唯一预测位置优先落槽，重复或缺失位置按客户端顺序补入空槽。
+  const results = assignParticipantsToFixedSlots(participants).map(({ team, position, participantIdx }) => {
+      const participant = participants[participantIdx] || {};
+      const positionLabel = LANES.find(([key]) => key === position)?.[1] || "未知";
+      const mappedPlayer = participant.accountName ? findPlayerByAccount(participant.accountName) : null;
+      const testPlayer = game._testData && participant.accountName
+        ? playerByName(participant.accountName.split("#")[0])
+        : null;
+      const matchedPlayer = mappedPlayer || testPlayer;
+      return {
+        player: {
+          id: matchedPlayer?.id || "",
+          name: matchedPlayer?.displayName || "",
+          cost: matchedPlayer?.defaultCost || 1,
+        },
+        team,
+        position,
+        positionLabel,
+        champion: {
+          slug: participant.championSlug || championSlug(participant.championAlias || participant.championName || ""),
+          name: participant.championName || "",
+          weight: 0,
+          banRate: 0,
+        },
+        _participantIdx: participantIdx,
+      };
     });
-  }
 
   const collected = {
     source: game._testData ? "手动录入（测试数据）" : "手动录入（客户端采集）",
@@ -2637,17 +2722,11 @@ function selectRecentGame(game) {
   };
 
   // 预匹配
-  const mp = new Map();
-  participants.forEach((p, i) => {
-    const matched = results.find(r => r._participantIdx === i);
-    if (matched?.player.id && !matched.player.id.startsWith("manual-")) {
-      mp.set(matched.player.id, i);
-    }
-  });
-
   state.results = results;
   state.collectedMatch = collected;
-  state.matchedParticipants = mp;
+  collectionRevision += 1;
+  state.matchedParticipants = new Map();
+  syncMatchedParticipantsFromSlots();
   state.revealed = 10;
   state.submitted = false;
   state.draftId = crypto.randomUUID();
@@ -3607,6 +3686,7 @@ function bindEvents() {
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
   $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
   $("#manualCollectBtn").addEventListener("click", handleManualCollectClick);
+  $("#manualGameIdForm").addEventListener("submit", fetchRecentGameById);
   $("#localMappingsBtn").addEventListener("click", openLocalMappings);
   $("#localMappingForm").addEventListener("submit", saveLocalMapping);
   $("#localMappingsList").addEventListener("click", (event) => {
