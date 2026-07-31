@@ -23,7 +23,7 @@ func TestHealthIdentifiesGoProxy(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response["runtime"] != "go" || response["mode"] != "proxy" {
+	if response["runtime"] != "go" || response["mode"] != "proxy" || response["version"] != proxyVersion {
 		t.Fatalf("unexpected health response: %#v", response)
 	}
 }

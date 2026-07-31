@@ -1,7 +1,14 @@
 import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
 import { createSearchForms, fuzzyMatches } from "./search-core.js";
-import { matchCollectedParticipants, championSlug } from "./collector-core.js";
+import {
+  championSlug,
+  collectedMatchProblems,
+  matchCollectedParticipants,
+  normalizeClientPositionKey,
+  normalizeClientTeam,
+  riotIdFromClientPlayer,
+} from "./collector-core.js";
 import { createClient } from "@supabase/supabase-js";
 import { pinyin } from "pinyin-pro";
 
@@ -17,8 +24,9 @@ const LANES = [
 const CACHE_SCHEMA = 10;
 const HISTORY_PAGE_SIZE = 20;
 const COLLECTOR_URL = "http://127.0.0.1:32145";
+const COLLECTOR_PROXY_VERSION = "3.1.0";
 const searchFormCache = new Map();
-let championIdMap = null; // { championId: "championName" }
+let championIdMap = null; // { championId: { name, alias } }
 const DRAW_OPTION_IDS = ["randomTeams", "randomPositions", "randomHeroes", "uniqueHeroes", "globalBp"];
 
 const state = {
@@ -73,20 +81,7 @@ function normalizeName(value = "") {
 }
 
 function normalizeClientPosition(position = "", lane = "", role = "") {
-  const rawPosition = String(position || "").trim().toUpperCase();
-  const rawLane = String(lane || "").trim().toUpperCase();
-  const rawRole = String(role || "").trim().toUpperCase();
-  const positionCode = ["", "NONE", "UNSELECTED", "FILL"].includes(rawPosition)
-    ? rawLane
-    : rawPosition;
-  let key = "";
-  if (positionCode === "TOP") key = "top";
-  else if (positionCode === "JUNGLE") key = "jungle";
-  else if (["MID", "MIDDLE", "CENTER"].includes(positionCode)) key = "middle";
-  else if (["UTILITY", "SUPPORT"].includes(positionCode)) key = "support";
-  else if (["BOT", "BOTTOM"].includes(positionCode)) {
-    key = ["UTILITY", "SUPPORT", "DUO_SUPPORT"].includes(rawRole) ? "support" : "bottom";
-  }
+  const key = normalizeClientPositionKey(position, lane, role);
   return {
     key,
     label: LANES.find(([laneKey]) => laneKey === key)?.[1] || "未知",
@@ -1690,7 +1685,8 @@ async function collectorIsRunning() {
     return health.ok === true
       && health.service === "LGG Collector Bridge"
       && health.runtime === "go"
-      && health.mode === "proxy";
+      && health.mode === "proxy"
+      && health.version === COLLECTOR_PROXY_VERSION;
   } catch {
     return false;
   }
@@ -2036,6 +2032,8 @@ function collectedMatchFromClientGame(normalized, source, manualGameId = "") {
     playedAt: normalized.playedAt,
     durationSeconds: normalized.durationSeconds,
     gameMode: normalized.gameMode,
+    gameType: normalized.gameType,
+    mapId: normalized.mapId,
     winner: normalized.winner || "",
     participants: normalized.participants.map((participant) => ({
       team: participant.team,
@@ -2043,6 +2041,8 @@ function collectedMatchFromClientGame(normalized, source, manualGameId = "") {
       accountName: participant.accountName,
       championName: participant.championName,
       championId: participant.championId,
+      championAlias: participant.championAlias,
+      championSlug: participant.championSlug,
       stats: {
         kills: participant.stats?.kills || 0,
         deaths: participant.stats?.deaths || 0,
@@ -2061,10 +2061,24 @@ async function fetchClientGameDetail(gameId, source, manualGameId = "") {
   const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${encodeURIComponent(gameId)}`, 12_000);
   const champMap = await loadChampionIdMap();
   const normalized = normalizeLcuGameDetail(detail, champMap);
-  if (!normalized || normalized.participants.length < 10) {
-    throw new Error("对局详情获取失败或玩家不足 10 人。");
-  }
-  return collectedMatchFromClientGame(normalized, source, manualGameId);
+  if (!normalized) throw new Error("对局详情结构无法识别。");
+  const collected = collectedMatchFromClientGame(normalized, source, manualGameId);
+  const problems = collectedMatchProblems(collected);
+  if (problems.length) throw new Error(`对局数据不完整：${problems.slice(0, 4).join("；")}`);
+  return collected;
+}
+
+function historyGameTimestamp(game) {
+  const raw = game?.gameCreationDate ?? game?.gameCreation ?? game?.gameStartTimestamp ?? game?.gameStartTime;
+  if (typeof raw === "number") return raw < 10_000_000_000 ? raw * 1000 : raw;
+  const parsed = new Date(raw || "").getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function isCustomHistoryGame(game) {
+  return game?.gameType === "CUSTOM_GAME"
+    || game?.gameType === "PRACTICE_GAME"
+    || Number(game?.queueId) === 0;
 }
 
 async function fetchLatestClientMatch() {
@@ -2073,9 +2087,9 @@ async function fetchLatestClientMatch() {
     12_000,
   );
   const games = history?.games?.games || [];
-  const customGames = games.filter((game) =>
-    game.gameType === "CUSTOM_GAME" || game.gameType === "PRACTICE_GAME"
-  );
+  const customGames = games
+    .filter(isCustomHistoryGame)
+    .sort((a, b) => historyGameTimestamp(b) - historyGameTimestamp(a));
   if (!customGames.length) throw new Error("没有找到最近的自定义对局。");
 
   const detailErrors = [];
@@ -2127,9 +2141,8 @@ async function collectMatchData() {
     const collected = manualGameId
       ? await fetchClientGameDetail(manualGameId, "手动录入（浏览器解析）", manualGameId)
       : await fetchLatestClientMatch();
-    if (!Array.isArray(collected.participants) || collected.participants.length < 10) {
-      throw new Error("采集到的玩家不足 10 人，请确认读取的是完整的召唤师峡谷对局。");
-    }
+    const collectionProblems = collectedMatchProblems(collected);
+    if (collectionProblems.length) throw new Error(`采集结果不能使用：${collectionProblems.slice(0, 4).join("；")}`);
     state.collectedMatch = collected;
     // 自动匹配：先用历史映射，再用 score 匹配
     const participants = collected.participants;
@@ -2148,16 +2161,16 @@ async function collectMatchData() {
           continue;
         }
       }
-      // 反向查：用客户端账号找 LGG 选手
-      const pp = participants.find((p, i) => !used.has(i) && p.accountName);
-      if (pp) {
-        const matched = findPlayerByAccount(pp.accountName);
-        if (matched && matched.id === result.player.id) {
-          state.matchedParticipants.set(result.player.id, participants.indexOf(pp));
-          used.add(participants.indexOf(pp));
-        }
-      }
     }
+    // 反向查：遍历所有尚未使用的客户端账号，补齐本地映射。
+    participants.forEach((participant, participantIndex) => {
+      if (used.has(participantIndex) || !participant.accountName) return;
+      const matched = findPlayerByAccount(participant.accountName);
+      if (!matched || state.matchedParticipants.has(matched.id)) return;
+      if (!state.results.some((result) => result.player.id === matched.id)) return;
+      state.matchedParticipants.set(matched.id, participantIndex);
+      used.add(participantIndex);
+    });
     // 第二轮：用 score 匹配剩余
     const unmatchedResults = state.results.filter((r) => !state.matchedParticipants.has(r.player.id));
     const remainingParticipants = participants.filter((_, i) => !used.has(i));
@@ -2220,13 +2233,55 @@ function matchSnapshot() {
         position: clientPosition.key,
         positionLabel: clientPosition.label,
         champion: {
-          slug: championSlug(participant?.championName || ""),
+          slug: participant?.championSlug || championSlug(participant?.championAlias || participant?.championName || ""),
           name: participant?.championName || "",
         },
         ...(participant?.stats ? { stats: participant.stats } : {}),
       };
     }),
   };
+}
+
+function matchSubmissionProblems(snapshot) {
+  const problems = [];
+  if (!state.collectedMatch) return ["请先采集并确认客户端对局数据"];
+  problems.push(...collectedMatchProblems(state.collectedMatch));
+  if (state.results.length !== 10 || snapshot.participants.length !== 10) {
+    problems.push("正式比赛必须恰好包含 10 名选手");
+  }
+
+  const playerIds = new Set();
+  const participantAccounts = new Set();
+  const participantRefs = new Set();
+  for (const result of state.results) {
+    const playerId = result.player?.id || "";
+    if (!playerId || !playerById(playerId)) {
+      problems.push("仍有客户端玩家未从选手库匹配到实际选手");
+      continue;
+    }
+    if (playerIds.has(playerId)) problems.push(`选手重复：${result.player.name || playerId}`);
+    playerIds.add(playerId);
+
+    const matchRef = state.matchedParticipants.get(playerId);
+    if (matchRef == null) {
+      problems.push(`选手 ${result.player.name || playerId} 尚未匹配客户端玩家`);
+      continue;
+    }
+    const refKey = typeof matchRef === "number" ? `index:${matchRef}` : `account:${normalizeName(matchRef?.accountName || "")}`;
+    if (participantRefs.has(refKey)) problems.push("同一客户端玩家被分配给了多个选手");
+    participantRefs.add(refKey);
+  }
+
+  for (const participant of snapshot.participants) {
+    const accountKey = normalizeName(participant.accountName || "");
+    if (!accountKey) continue;
+    if (participantAccounts.has(accountKey)) problems.push(`游戏 ID 重复：${participant.accountName}`);
+    participantAccounts.add(accountKey);
+  }
+  if (state.matchedParticipants.size !== 10 || participantRefs.size !== 10) {
+    problems.push(`客户端玩家尚未全部匹配（${participantRefs.size} / 10）`);
+  }
+  return [...new Set(problems)];
 }
 
 async function submitMatch(event) {
@@ -2242,6 +2297,10 @@ async function submitMatch(event) {
     const playedAt = new Date($("#playedAt").value);
     if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
     snapshot = matchSnapshot();
+    const submissionProblems = matchSubmissionProblems(snapshot);
+    if (submissionProblems.length) {
+      throw new Error(`无法提交：${submissionProblems.slice(0, 4).join("；")}`);
+    }
     confirmedMappings = snapshot.participants
       .filter((participant) => participant.playerId && participant.accountName && playerById(participant.playerId))
       .map((participant) => ({
@@ -2340,7 +2399,9 @@ async function fetchRecentGames() {
     }
 
     // 2. 过滤自定义对局，逐个拉详情
-    const customGames = games.filter(g => g.gameType === "CUSTOM_GAME" || g.gameType === "PRACTICE_GAME");
+    const customGames = games
+      .filter(isCustomHistoryGame)
+      .sort((a, b) => historyGameTimestamp(b) - historyGameTimestamp(a));
     if (!customGames.length) {
       status.textContent = "没有找到自定义对局。";
       return;
@@ -2351,9 +2412,11 @@ async function fetchRecentGames() {
     const detailedGames = [];
     for (const g of customGames) {
       try {
-        const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${g.gameId}`, 8000);
+        const gameId = String(g.gameId || g.id || "");
+        if (!gameId) continue;
+        const detail = await collectorRequest(`/proxy/lcu/lol-match-history/v1/games/${encodeURIComponent(gameId)}`, 8000);
         const normalized = normalizeLcuGameDetail(detail, champMap);
-        if (normalized && normalized.participants.length >= 5) {
+        if (normalized && collectedMatchProblems(normalized).length === 0) {
           detailedGames.push(normalized);
         }
       } catch { /* skip failed details */ }
@@ -2396,7 +2459,12 @@ async function loadChampionIdMap() {
     const data = await collectorRequest("/proxy/lcu/lol-game-data/assets/v1/champion-summary.json", 5000);
     const map = {};
     for (const c of (data || [])) {
-      if (c.id > 0) map[c.id] = c.name || c.alias || "";
+      if (c.id > 0) {
+        map[c.id] = {
+          name: c.name || c.alias || "",
+          alias: c.alias || "",
+        };
+      }
     }
     championIdMap = map;
     return map;
@@ -2425,27 +2493,23 @@ function normalizeLcuGameDetail(raw, champMap = {}) {
       p.lane || timeline.lane || stats.lane,
       p.role || timeline.role || stats.role,
     );
-    const champName = p.championName || (p.champion && p.champion.name) || p.skinName || player.championName || champMap[p.championId] || "";
+    const championId = Number(p.championId || (p.champion && p.champion.id) || 0);
+    const championInfo = champMap[championId] || {};
+    const champName = p.championName || (p.champion && p.champion.name)
+      || championInfo.name || p.skinName || player.championName || championInfo.alias || "";
+    const championAlias = p.championAlias || (p.champion && p.champion.alias)
+      || championInfo.alias || p.skinName || p.championName || "";
     return {
-      team: (p.teamId === 100 || p.team === "ORDER" || p.team === "BLUE") ? "blue" : "red",
+      team: normalizeClientTeam(p.teamId, p.team),
       position: clientPosition.key,
-      accountName: player.summonerName || player.gameName ||
-        (player.riotIdGameName && player.riotIdTagLine ? `${player.riotIdGameName}#${player.riotIdTagLine}` : "") ||
-        player.riotId || "",
+      accountName: riotIdFromClientPlayer(player),
       championName: champName,
-      championId: p.championId || (p.champion && p.champion.id) || 0,
+      championId,
+      championAlias,
+      championSlug: championSlug(championAlias || champName),
       stats: stats,
       win: stats.win === true || stats.win === "Win" || p.win === true || p.win === "Win",
     };
-  }).filter(p => p.accountName || p.championId);
-
-  // 去重
-  const seen = new Set();
-  const unique = participants.filter(p => {
-    const key = `${p.team}|${p.accountName}|${p.championId}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
   });
 
   // 从 teams 推断胜方
@@ -2454,10 +2518,11 @@ function normalizeLcuGameDetail(raw, champMap = {}) {
   for (const t of teams) {
     const won = t.win === "Win" || t.win === true || t.isWinningTeam === true;
     if (won) {
-      winner = (t.teamId === 100 || t.team === "ORDER" || t.team === "BLUE") ? "blue" : "red";
+      winner = normalizeClientTeam(t.teamId, t.team);
       break;
     }
   }
+  if (!winner) winner = participants.find((participant) => participant.win)?.team || "";
 
   return {
     gameId: String(game.gameId || game.id || ""),
@@ -2465,8 +2530,9 @@ function normalizeLcuGameDetail(raw, champMap = {}) {
     durationSeconds: game.gameDuration || game.gameLength || 0,
     gameMode: game.gameMode || "",
     gameType: game.gameType || "",
+    mapId: Number(game.mapId || game.gameMapId || game.map?.id || 0),
     winner,
-    participants: unique,
+    participants,
   };
 }
 
@@ -2497,13 +2563,17 @@ function renderRecentGames(games) {
 
 function selectRecentGame(game) {
   const participants = game.participants || [];
-  const players = activePlayers();
+  const problems = collectedMatchProblems(game);
+  if (problems.length) {
+    toast(`该对局不能录入：${problems.slice(0, 4).join("；")}`);
+    return;
+  }
 
-  // 为每个客户端玩家创建一行（不足10行补空）
+  // 已通过完整性校验，此处始终严格生成 10 行。
   const results = [];
-  for (let i = 0; i < Math.max(participants.length, 10); i++) {
-    const p = participants[i] || {};
-    const team = p.team || (i < 5 ? "blue" : "red");
+  for (let i = 0; i < participants.length; i++) {
+    const p = participants[i];
+    const team = p.team;
     const clientPosition = normalizeClientPosition(p.position, p.lane, p.role);
     const mappedPlayer = p.accountName ? findPlayerByAccount(p.accountName) : null;
     const testPlayer = game._testData && p.accountName
@@ -2521,7 +2591,7 @@ function selectRecentGame(game) {
       position: clientPosition.key,
       positionLabel: clientPosition.label,
       champion: {
-        slug: championSlug(p.championName || ""),
+        slug: p.championSlug || championSlug(p.championAlias || p.championName || ""),
         name: p.championName || "",
         weight: 0,
         banRate: 0,
@@ -2541,6 +2611,8 @@ function selectRecentGame(game) {
     playedAt: game.playedAt,
     durationSeconds: game.durationSeconds,
     gameMode: game.gameMode,
+    gameType: game.gameType,
+    mapId: game.mapId,
     winner: game.winner || "",
     participants: participants.map(p => ({
       team: p.team,
@@ -2548,6 +2620,8 @@ function selectRecentGame(game) {
       accountName: p.accountName,
       championName: p.championName,
       championId: p.championId,
+      championAlias: p.championAlias,
+      championSlug: p.championSlug,
       stats: {
         kills: p.stats?.kills || 0,
         deaths: p.stats?.deaths || 0,

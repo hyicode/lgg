@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const proxyVersion = "3.0.0"
+const proxyVersion = "3.1.0"
 
 // CollectorServer 只负责发现本机客户端并透明转发请求。
 // 对局选择、字段解析和业务校验全部由网页完成。

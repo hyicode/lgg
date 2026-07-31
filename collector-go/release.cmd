@@ -6,7 +6,7 @@ echo.
 cd /d "%~dp0"
 
 set "DIST=%~dp0dist"
-set "VERSION=v3.0.0"
+set "VERSION=v3.1.0"
 set "PUBLIC=%~dp0..\public\collector"
 
 if exist "%DIST%" rd /s /q "%DIST%"
