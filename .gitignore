@@ -1,0 +1,6 @@
+collector/config.json
+.collector-bridge*.log
+.local-web*.log
+.idea/
+node_modules/
+dist/
