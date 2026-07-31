@@ -6,7 +6,7 @@ function AuthGate() {
       <div className="login-card">
         <div className="eyebrow">League of Legends · Custom PVP</div>
         <h1>LGG</h1>
-        <p>登录后进入抽签、共享战绩与排行榜。</p>
+        <p>登录后进入天命、共享战绩与排行榜。</p>
         <form id="loginForm">
           <label>
             账号
@@ -31,10 +31,10 @@ function AppHeader() {
   return (
     <>
       <header className="hero">
-        <div>
+        <div className="hero-brand">
           <div className="eyebrow">League of Legends · Custom PVP</div>
-          <h1>LGG</h1>
-          <p>命运已洗牌。结果由你们共同记录。</p>
+          <h1>LGG · 天命</h1>
+          <p>天命已定，胜负由你们共同记录。</p>
         </div>
         <div className="account-box">
           <span id="accountLabel" />
@@ -43,7 +43,7 @@ function AppHeader() {
       </header>
 
       <nav className="main-nav" aria-label="主功能">
-        <button className="nav-btn active" data-view="rollView">抽签</button>
+        <button className="nav-btn active" data-view="rollView">天命</button>
         <button className="nav-btn" data-view="historyView">对局历史</button>
         <button className="nav-btn" data-view="leaderboardView">战绩排行</button>
         <button className="nav-btn member-only hidden" data-view="adminView">管理</button>
@@ -52,8 +52,17 @@ function AppHeader() {
       <div className="toolbar">
         <div><span className="status-dot" /><span id="dataStatus">正在加载分路数据…</span></div>
         <div className="toolbar-actions">
+          <button
+            className="mini admin-only hidden test-data-toggle"
+            id="testDataModeBtn"
+            type="button"
+            aria-pressed="false"
+          >
+            测试数据：关
+          </button>
+          <button className="mini" id="localMappingsBtn">游戏 ID 映射</button>
           <button className="mini" id="heroStatsBtn">英雄数据</button>
-          <button className="mini" id="resetBtn">重置名单</button>
+          <button className="mini" id="resetBtn">清空阵容</button>
         </div>
       </div>
     </>
@@ -73,6 +82,41 @@ function ClashDivider() {
   return (
     <div className="clash-divider">
       <span className="clash-line" />
+      <div className="draw-options-panel">
+        <div className="draw-options-head">
+          <strong>天命规则</strong>
+          <span className="bp-cycle-summary">
+            <strong className="bp-round" id="globalBpRound">第 1 / 5 轮</strong>
+            <button className="bp-details-button" id="globalBpDetailsBtn" type="button">BP 详情</button>
+          </span>
+        </div>
+        <div className="draw-options-grid">
+          <label className="draw-option" title="重新随机蓝红双方阵容">
+            <input type="checkbox" id="randomTeams" defaultChecked />
+            <span><strong>随机分队</strong></span>
+          </label>
+          <label className="draw-option" title="随机交换选手所在的固定分路牌">
+            <input type="checkbox" id="randomPositions" defaultChecked />
+            <span><strong>随机位置</strong></span>
+          </label>
+          <label className="draw-option" title="按位置英雄池随机抽取">
+            <input type="checkbox" id="randomHeroes" defaultChecked />
+            <span><strong>随机英雄</strong></span>
+          </label>
+          <label className="draw-option" title="本局双方英雄不能相同">
+            <input type="checkbox" id="uniqueHeroes" defaultChecked />
+            <span><strong>禁止英雄重复</strong></span>
+          </label>
+          <label className="draw-option global-bp-option" title="记录本局后计入一轮，已用英雄后续不可再选，第五轮后自动重置">
+            <input type="checkbox" id="globalBp" defaultChecked />
+            <span><strong>全局 BP</strong></span>
+          </label>
+        </div>
+        <div className="global-bp-status">
+          <span id="globalBpStatus">已禁用 0 个英雄</span>
+          <button className="mini" id="clearGlobalBpBtn" type="button">清空</button>
+        </div>
+      </div>
       <span className="clash-matchup">
         <span className="clash-team-cost blue" id="blueCost">费用 0</span>
         <span className="clash-emblem" role="img" aria-label="蓝方对阵红方">
@@ -82,13 +126,13 @@ function ClashDivider() {
         <span className="clash-team-cost red" id="redCost">费用 0</span>
       </span>
       <div className="control clash-controls">
-        <div className="clash-quick-actions">
-          <button className="ghost test-fill" id="testFillBtn">测试填充</button>
-          <button className="ghost" id="balanceBtn">随机分选手</button>
+        <div className="draw-actions">
+          <button className="roll" id="rollBtn">开启天命！</button>
+          <button className="reveal hidden" id="revealBtn">揭晓天命</button>
+          <button className="primary hidden" id="recordBtn">记录本局</button>
+          <button className="ghost hidden" id="againBtn">再启天命</button>
+          <button className="ghost hidden" id="backBtn">调整阵容</button>
         </div>
-        <label className="check"><input type="checkbox" id="uniqueHeroes" /> 禁止英雄重复（全局）</label>
-        <label className="check"><input type="checkbox" id="sequentialReveal" /> 逐个揭晓</label>
-        <button className="roll" id="rollBtn">LGG，开始抽签！</button>
       </div>
       <span className="clash-line" />
     </div>
@@ -108,28 +152,11 @@ function RollView() {
       </section>
 
       <section className="arena" id="arena" aria-live="polite">
-        <div className="arena-head">
-          <h2>本局命运</h2>
-          <div className="progress" id="progress">等待揭晓 · 0 / 10</div>
-        </div>
-        <div className="battle-layout">
-          <aside className="ban-side left">
-            <div className="ban-title">全局禁用 · 1–5</div>
-            <div className="ban-list" id="banListLeft" />
-          </aside>
-          <div className="results" id="results" />
-          <aside className="ban-side right">
-            <div className="ban-title">全局禁用 · 6–10</div>
-            <div className="ban-list" id="banListRight" />
-          </aside>
-        </div>
-        <div className="reveal-bar">
-          <button className="ghost" id="backBtn">返回名单</button>
-          <button className="reveal" id="revealBtn">全部揭晓</button>
-          <button className="primary hidden" id="recordBtn">记录本局</button>
-          <button className="ghost hidden" id="againBtn">再抽一次</button>
-        </div>
+        <div className="ban-list" id="banListLeft" />
+        <div className="results" id="results" />
+        <div className="ban-list" id="banListRight" />
       </section>
+      <div className="fate-fx-layer" id="fateFxLayer" aria-hidden="true" />
     </section>
   );
 }
@@ -209,6 +236,7 @@ function AdminView() {
     <section className="view hidden" id="adminView">
       <div className="section-head">
         <div><h2>管理员控制台</h2><p>维护共享选手库并修正正式比赛。</p></div>
+        <button className="ghost admin-only hidden" id="testFillBtn">测试填充阵容</button>
       </div>
       <div className="admin-grid">
         <section className="panel">
@@ -405,6 +433,62 @@ function PlayerLibraryDialog() {
   );
 }
 
+function GlobalBpDialog() {
+  return (
+    <dialog id="globalBpDialog" className="bp-details-dialog">
+      <div className="dialog-head">
+        <div>
+          <h2>全局 BP 详情</h2>
+          <small id="globalBpDialogMeta">当前周期尚未开始</small>
+        </div>
+        <DialogCloseButton />
+      </div>
+      <div className="bp-details-body" id="globalBpDetailsBody" />
+    </dialog>
+  );
+}
+
+function LocalMappingsDialog() {
+  return (
+    <dialog id="localMappingsDialog" className="local-mappings-dialog">
+      <div className="dialog-head">
+        <div>
+          <h2>本地游戏 ID 映射</h2>
+          <small>建立 LGG 玩家与游戏 ID 的双向关系，仅保存在当前浏览器。</small>
+        </div>
+        <DialogCloseButton />
+      </div>
+      <div className="local-mappings-body">
+        <form id="localMappingForm" className="local-mapping-form">
+          <label>
+            LGG 玩家
+            <select id="localMappingPlayer" required>
+              <option value="">选择玩家</option>
+            </select>
+          </label>
+          <span className="local-mapping-arrow" aria-hidden="true">↔</span>
+          <label>
+            游戏 ID
+            <input
+              id="localMappingGameId"
+              maxLength={64}
+              placeholder="例如：召唤师名#CN1"
+              autoComplete="off"
+              required
+            />
+          </label>
+          <button className="primary" type="submit">保存映射</button>
+        </form>
+        <p className="local-mapping-tip">
+          采集对局和录入历史对局时会自动匹配；同一玩家或游戏 ID 只能保留一条关系。
+        </p>
+        <div className="form-error" id="localMappingError" role="alert" />
+        <div className="local-mappings-list" id="localMappingsList" />
+      </div>
+    </dialog>
+  );
+}
+
 function Dialogs() {
   return (
     <>
@@ -413,6 +497,8 @@ function Dialogs() {
       <ManualMatchDialog />
       <HeroStatsDialog />
       <PlayerLibraryDialog />
+      <GlobalBpDialog />
+      <LocalMappingsDialog />
       <div className="toast" id="toast" role="status" />
     </>
   );

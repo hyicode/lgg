@@ -12,7 +12,7 @@
     "check": "pnpm validate && pnpm test && pnpm build"
   },
   "version": "1.0.0",
-  "description": "基于 GitHub Pages、Supabase Auth 和 PostgreSQL 的英雄联盟内部 PVP\r 抽签与多人共享战绩工具。",
+  "description": "基于 GitHub Pages、Supabase Auth 和 PostgreSQL 的英雄联盟内部 PVP 天命编排与多人共享战绩工具。",
   "main": "index.js",
   "directories": {
     "test": "tests"

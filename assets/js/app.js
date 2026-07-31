@@ -19,6 +19,7 @@ const HISTORY_PAGE_SIZE = 20;
 const COLLECTOR_URL = "http://127.0.0.1:32145";
 const searchFormCache = new Map();
 let championIdMap = null; // { championId: "championName" }
+const DRAW_OPTION_IDS = ["randomTeams", "randomPositions", "randomHeroes", "uniqueHeroes", "globalBp"];
 
 const state = {
   supabase: null,
@@ -38,12 +39,18 @@ const state = {
   collectedMatch: null,
   matchedParticipants: new Map(),
   collectorNeedsInstall: false,
+  testDataEnabled: false,
   historyPage: 1,
   setupRestored: false,
   realtimeChannel: null,
   riotAccounts: new Map(),
   playerStats: new Map(),
   playerPickerInput: null,
+  globalBpRosterKey: "",
+  globalBpUsed: new Set(),
+  globalBpRounds: 0,
+  globalBpCommittedDraftId: null,
+  fateSequence: 0,
 };
 
 function escapeHtml(value = "") {
@@ -58,6 +65,123 @@ function escapeHtml(value = "") {
 
 function normalizeName(value = "") {
   return value.trim().toLocaleLowerCase("zh-CN").replace(/\s+/g, " ");
+}
+
+function loadGlobalBpState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("lgg-global-bp-v1") || "null");
+    state.globalBpRosterKey = typeof saved?.rosterKey === "string" ? saved.rosterKey : "";
+    state.globalBpUsed = new Set(Array.isArray(saved?.used) ? saved.used.filter(Boolean) : []);
+    state.globalBpRounds = Number.isInteger(saved?.rounds)
+      ? Math.min(4, Math.max(0, saved.rounds))
+      : state.globalBpUsed.size ? 1 : 0;
+  } catch {
+    state.globalBpRosterKey = "";
+    state.globalBpUsed = new Set();
+    state.globalBpRounds = 0;
+  }
+}
+
+function saveGlobalBpState() {
+  try {
+    localStorage.setItem("lgg-global-bp-v1", JSON.stringify({
+      rosterKey: state.globalBpRosterKey,
+      used: [...state.globalBpUsed],
+      rounds: state.globalBpRounds,
+    }));
+  } catch {
+    // 本机规则状态保存失败不影响天命流程。
+  }
+}
+
+function currentRosterKey() {
+  return [...lineup("blue"), ...lineup("red")]
+    .map((player) => player.id)
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+function ensureGlobalBpRoster() {
+  const rosterKey = currentRosterKey();
+  if (rosterKey === state.globalBpRosterKey) return;
+  state.globalBpRosterKey = rosterKey;
+  state.globalBpUsed = new Set();
+  state.globalBpRounds = 0;
+  state.globalBpCommittedDraftId = null;
+  saveGlobalBpState();
+}
+
+function clearGlobalBp() {
+  state.globalBpRosterKey = currentRosterKey();
+  state.globalBpUsed = new Set();
+  state.globalBpRounds = 0;
+  state.globalBpCommittedDraftId = null;
+  saveGlobalBpState();
+  renderDrawOptionsStatus();
+  toast("已清空当前阵容的全局 BP 英雄池。");
+}
+
+function renderDrawOptionsStatus() {
+  const round = $("#globalBpRound");
+  if (round) round.textContent = `第 ${state.globalBpRounds + 1} / 5 轮`;
+  const status = $("#globalBpStatus");
+  if (status) status.textContent = `已禁用 ${state.globalBpUsed.size} 个英雄`;
+  const clearButton = $("#clearGlobalBpBtn");
+  if (clearButton) {
+    const locked = $("#setupSection")?.classList.contains("roll-active");
+    clearButton.disabled = locked || (state.globalBpUsed.size === 0 && state.globalBpRounds === 0);
+  }
+  if ($("#globalBpDialog")?.open) renderGlobalBpDetails();
+}
+
+function setDrawOptionsLocked(locked) {
+  DRAW_OPTION_IDS.forEach((id) => {
+    const input = $(`#${id}`);
+    if (input) input.disabled = locked;
+  });
+  $(".draw-options-panel")?.classList.toggle("is-locked", locked);
+  renderDrawOptionsStatus();
+}
+
+function globalBpHeroDetails() {
+  const catalog = new Map();
+  if (state.pools) {
+    Object.values(state.pools).flat().forEach((hero) => {
+      if (!catalog.has(hero.slug)) catalog.set(hero.slug, hero);
+    });
+  }
+  return [...state.globalBpUsed]
+    .map((slug) => catalog.get(slug) || {
+      id: 0,
+      slug,
+      name: slug,
+      image: "",
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+}
+
+function renderGlobalBpDetails() {
+  const meta = $("#globalBpDialogMeta");
+  const body = $("#globalBpDetailsBody");
+  if (!meta || !body) return;
+  const heroes = globalBpHeroDetails();
+  meta.textContent = `已完成 ${state.globalBpRounds} / 5 轮 · 下一轮为第 ${state.globalBpRounds + 1} 轮 · 共禁用 ${heroes.length} 个英雄`;
+  body.innerHTML = heroes.length
+    ? `<div class="bp-details-grid">${heroes.map((hero) => `
+      <article class="bp-hero-card">
+        <img src="${escapeHtml(portrait(hero))}" alt="${escapeHtml(hero.name)}">
+        <strong>${escapeHtml(hero.name)}</strong>
+      </article>`).join("")}</div>`
+    : `<div class="bp-details-empty"><strong>暂无全局禁用英雄</strong><small>成功记录一局后，使用过的英雄会显示在这里。</small></div>`;
+  $$("#globalBpDetailsBody .bp-hero-card img").forEach((image, index) => {
+    image.addEventListener("error", () => { image.src = avatar(heroes[index]); }, { once: true });
+  });
+}
+
+function openGlobalBpDetails() {
+  renderGlobalBpDetails();
+  $("#globalBpDialog").showModal();
 }
 
 function searchForms(value = "") {
@@ -80,7 +204,41 @@ function loadNameMappings() {
   try {
     const raw = localStorage.getItem(NAME_MAP_KEY);
     const data = raw ? JSON.parse(raw) : null;
-    if (data && data.byPlayerId && data.byAccountName) return data;
+    if (data && data.byPlayerId && data.byAccountName) {
+      let changed = false;
+      if (!data.byPlayerName) {
+        data.byPlayerName = {};
+        changed = true;
+      }
+      if (!data.byGameId) {
+        data.byGameId = {};
+        changed = true;
+      }
+      for (const [playerId, gameId] of Object.entries(data.byPlayerId)) {
+        const player = playerById(playerId);
+        if (!player || !gameId) continue;
+        const playerKey = normalizeName(player.displayName);
+        const gameKey = normalizeName(gameId);
+        if (data.byPlayerName[playerKey] !== gameId) {
+          data.byPlayerName[playerKey] = gameId;
+          changed = true;
+        }
+        if (data.byGameId[gameKey] !== player.displayName) {
+          data.byGameId[gameKey] = player.displayName;
+          changed = true;
+        }
+      }
+      if (data.version !== 3) {
+        data.version = 3;
+        changed = true;
+      }
+      if (changed) {
+        try {
+          localStorage.setItem(NAME_MAP_KEY, JSON.stringify(data));
+        } catch { /* quota exceeded */ }
+      }
+      return data;
+    }
   } catch { /* ignore */ }
   // 兼容旧版 v1 {playerId: accountName}
   try {
@@ -95,28 +253,45 @@ function loadNameMappings() {
         byPlayerId[pid] = name;
         byAccountName[key] = pid;
       }
-      const map = { byPlayerId, byAccountName, version: 2 };
+      const map = { byPlayerId, byAccountName, byPlayerName: {}, byGameId: {}, version: 3 };
       localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
       localStorage.removeItem("lgg-name-map-v1");
       return map;
     }
   } catch { /* ignore */ }
-  return { byPlayerId: {}, byAccountName: {}, version: 2 };
+  return { byPlayerId: {}, byAccountName: {}, byPlayerName: {}, byGameId: {}, version: 3 };
 }
 
 function saveBidirectionalMapping(playerId, accountName) {
   if (!playerId || !accountName) return;
   const map = loadNameMappings();
   const accKey = normalizeName(accountName);
+  const player = playerById(playerId);
+  const playerKey = normalizeName(player?.displayName || "");
   // 清除旧的反向映射
   const oldAcc = map.byPlayerId[playerId];
-  if (oldAcc) delete map.byAccountName[normalizeName(oldAcc)];
+  if (oldAcc) {
+    const oldAccKey = normalizeName(oldAcc);
+    delete map.byAccountName[oldAccKey];
+    delete map.byGameId[oldAccKey];
+    for (const [nameKey, gameId] of Object.entries(map.byPlayerName)) {
+      if (normalizeName(gameId) === oldAccKey) delete map.byPlayerName[nameKey];
+    }
+  }
   // 清除旧的正向映射
   const oldPid = map.byAccountName[accKey];
-  if (oldPid) delete map.byPlayerId[oldPid];
+  if (oldPid) {
+    delete map.byPlayerId[oldPid];
+    for (const [nameKey, gameId] of Object.entries(map.byPlayerName)) {
+      if (normalizeName(gameId) === accKey) delete map.byPlayerName[nameKey];
+    }
+  }
   // 写入双向
   map.byPlayerId[playerId] = accountName;
   map.byAccountName[accKey] = playerId;
+  if (playerKey) map.byPlayerName[playerKey] = accountName;
+  if (player) map.byGameId[accKey] = player.displayName;
+  map.version = 3;
   try {
     localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
   } catch { /* quota exceeded */ }
@@ -138,6 +313,94 @@ function findAccountByPlayer(playerId) {
   if (!playerId) return "";
   const map = loadNameMappings();
   return map.byPlayerId[playerId] || "";
+}
+
+function removeBidirectionalMapping(playerId) {
+  if (!playerId) return;
+  const map = loadNameMappings();
+  const accountName = map.byPlayerId[playerId];
+  delete map.byPlayerId[playerId];
+  if (accountName) {
+    const accountKey = normalizeName(accountName);
+    if (map.byAccountName[accountKey] === playerId) delete map.byAccountName[accountKey];
+    delete map.byGameId[accountKey];
+    for (const [nameKey, gameId] of Object.entries(map.byPlayerName)) {
+      if (normalizeName(gameId) === accountKey) delete map.byPlayerName[nameKey];
+    }
+  }
+  try {
+    localStorage.setItem(NAME_MAP_KEY, JSON.stringify(map));
+  } catch { /* quota exceeded */ }
+}
+
+function renderLocalMappings() {
+  const select = $("#localMappingPlayer");
+  const list = $("#localMappingsList");
+  if (!select || !list) return;
+
+  const selectedPlayerId = select.value;
+  const players = [...state.players].sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return a.displayName.localeCompare(b.displayName, "zh-CN");
+  });
+  select.innerHTML = `<option value="">选择玩家</option>${players.map((player) => `
+    <option value="${escapeHtml(player.id)}">${escapeHtml(player.displayName)}${player.active ? "" : "（已停用）"}</option>
+  `).join("")}`;
+  if (players.some((player) => player.id === selectedPlayerId)) select.value = selectedPlayerId;
+
+  const map = loadNameMappings();
+  const rows = Object.entries(map.byPlayerId)
+    .map(([playerId, gameId]) => ({
+      playerId,
+      gameId,
+      player: playerById(playerId),
+    }))
+    .sort((a, b) => (a.player?.displayName || "").localeCompare(b.player?.displayName || "", "zh-CN"));
+
+  list.innerHTML = rows.length
+    ? rows.map(({ playerId, gameId, player }) => `
+      <article class="local-mapping-row">
+        <span class="local-mapping-player">
+          <strong>${escapeHtml(player?.displayName || "已删除的玩家")}</strong>
+          <small>${player?.active === false ? "已停用" : "LGG 玩家"}</small>
+        </span>
+        <span class="local-mapping-row-arrow" aria-hidden="true">↔</span>
+        <span class="local-mapping-game-id" title="${escapeHtml(gameId)}">${escapeHtml(gameId)}</span>
+        <span class="local-mapping-actions">
+          ${player ? `<button class="mini" type="button" data-edit-local-mapping="${escapeHtml(playerId)}">编辑</button>` : ""}
+          <button class="mini danger" type="button" data-delete-local-mapping="${escapeHtml(playerId)}">删除</button>
+        </span>
+      </article>
+    `).join("")
+    : `<div class="local-mappings-empty">还没有映射。保存一次后，采集与录入对局都会自动识别玩家。</div>`;
+}
+
+function openLocalMappings() {
+  $("#localMappingForm").reset();
+  $("#localMappingError").textContent = "";
+  renderLocalMappings();
+  $("#localMappingsDialog").showModal();
+}
+
+function saveLocalMapping(event) {
+  event.preventDefault();
+  const playerId = $("#localMappingPlayer").value;
+  const gameId = $("#localMappingGameId").value.trim();
+  const error = $("#localMappingError");
+  const player = playerById(playerId);
+  if (!player) {
+    error.textContent = "请选择一个 LGG 玩家。";
+    return;
+  }
+  if (!gameId || gameId.length > 64) {
+    error.textContent = "请填写有效的游戏 ID。";
+    return;
+  }
+  saveBidirectionalMapping(playerId, gameId);
+  event.currentTarget.reset();
+  error.textContent = "";
+  renderLocalMappings();
+  toast(`已保存 ${player.displayName} ↔ ${gameId}。`);
 }
 
 function fuzzySearch(value, query) {
@@ -210,24 +473,49 @@ function makePlayerInputs(side) {
   const container = $(`#${side}Players`);
   container.innerHTML = "";
   for (let index = 1; index <= 5; index += 1) {
+    const [, laneLabel, laneAbbreviation] = LANES[index - 1];
     container.insertAdjacentHTML("beforeend", `
       <div class="player-row roster-card-row">
         <input class="player-name" type="hidden" data-side="${side}" data-slot="${index - 1}" value="">
-        <button class="roster-card is-empty" type="button" data-open-player-library aria-label="${side === "blue" ? "蓝方" : "红方"}第 ${index} 张牌，选择选手">
-          <span class="roster-card-empty">
-            <strong>?</strong>
-            <small>选择选手</small>
+        <input class="cost-input" type="hidden" value="1">
+        <button class="roster-card is-empty" type="button" data-open-player-library aria-label="${side === "blue" ? "蓝方" : "红方"}${laneLabel}牌，选择选手">
+          <span class="roster-card-cost-badge">
+            <span class="cost-gem" aria-hidden="true"></span>
+            <span data-card-cost>1</span>
           </span>
-          <span class="roster-card-selected">
-            <span class="roster-player-initial" data-card-initial>?</span>
-            <strong data-card-name>未选择</strong>
-            <small>点击替换</small>
+          <span class="roster-fixed-lane">${laneLabel}<small>${laneAbbreviation}</small></span>
+          <span class="roster-card-inner">
+            <span class="roster-card-face roster-card-front">
+              <span class="roster-card-empty">
+                <strong>?</strong>
+                <small>选择选手</small>
+              </span>
+              <span class="roster-card-selected">
+                <span class="roster-player-initial" data-card-initial>?</span>
+                <strong data-card-name>未选择</strong>
+                <small>点击替换</small>
+              </span>
+              <span class="roster-card-result">
+                <img data-result-image alt="">
+                <span class="roster-result-lane" data-result-lane></span>
+                <span class="roster-result-champion" data-result-champion></span>
+                <strong class="roster-result-player" data-result-player></strong>
+                <span class="roster-result-rate" data-result-rate></span>
+              </span>
+            </span>
+            <span class="roster-card-face roster-card-back" aria-hidden="true">
+              <strong>?</strong>
+              <small>天命待揭</small>
+            </span>
           </span>
         </button>
-        <label class="roster-card-cost">
-          <span class="cost-gem" aria-hidden="true"></span>
-          <input class="cost-input" type="number" min="0" step="0.5" value="1" readonly tabindex="-1" aria-label="选手 ${index} 费用">
-        </label>
+        <div class="roster-cost-editor" role="group" aria-label="临时调整本局费用">
+          <span class="roster-cost-editor-label">临时</span>
+          <button type="button" data-temp-cost-step="-0.5" aria-label="费用减少 0.5">−</button>
+          <output data-temp-cost>1</output>
+          <button type="button" data-temp-cost-step="0.5" aria-label="费用增加 0.5">+</button>
+          <button class="roster-cost-reset" type="button" data-temp-cost-reset aria-label="恢复选手库费用">还原</button>
+        </div>
       </div>`);
   }
 }
@@ -239,15 +527,46 @@ function renderRosterCard(row, player = null) {
   const input = row.querySelector(".player-name");
   const sideLabel = input?.dataset.side === "red" ? "红方" : "蓝方";
   const slot = Number(input?.dataset.slot || 0) + 1;
+  const laneLabel = LANES[slot - 1]?.[1] || `第 ${slot}`;
   const hasPlayer = Boolean(player?.id);
+  const costInput = row.querySelector(".cost-input");
+  const currentCost = Number(costInput?.value);
+  const defaultCost = Number(player?.defaultCost);
+  const displayCost = hasPlayer && Number.isFinite(currentCost)
+    ? currentCost
+    : Number.isFinite(defaultCost) ? defaultCost : 1;
+  const hasCostOverride = hasPlayer
+    && Number.isFinite(defaultCost)
+    && Math.abs(displayCost - defaultCost) > 0.001;
   row.classList.toggle("has-player", hasPlayer);
+  row.classList.toggle("has-cost-override", hasCostOverride);
   button.classList.toggle("is-empty", !hasPlayer);
   button.querySelector("[data-card-initial]").textContent = hasPlayer ? player.displayName.trim().slice(0, 1) : "?";
   button.querySelector("[data-card-name]").textContent = hasPlayer ? player.displayName : "未选择";
+  button.querySelector("[data-card-cost]").textContent = formatNumber(displayCost);
+  row.querySelector("[data-temp-cost]").textContent = formatNumber(displayCost);
   const label = hasPlayer
-    ? `${sideLabel}第 ${slot} 张牌，当前选手 ${player.displayName}，费用 ${formatNumber(player.defaultCost)}，点击替换`
-    : `${sideLabel}第 ${slot} 张牌，选择选手`;
+    ? `${sideLabel}${laneLabel}牌，当前选手 ${player.displayName}，费用 ${formatNumber(displayCost)}${hasCostOverride ? "，本局临时费用" : ""}，点击替换`
+    : `${sideLabel}${laneLabel}牌，选择选手`;
   button.setAttribute("aria-label", label);
+}
+
+function changeTemporaryRosterCost(control) {
+  const row = control.closest(".roster-card-row");
+  const input = row?.querySelector(".player-name");
+  const player = playerById(input?.dataset.playerId || "");
+  const costInput = row?.querySelector(".cost-input");
+  if (!row || !player || !costInput) return;
+
+  const currentCost = Number(costInput.value);
+  const step = Number(control.dataset.tempCostStep);
+  const nextCost = control.hasAttribute("data-temp-cost-reset")
+    ? Number(player.defaultCost)
+    : Math.min(99, Math.max(0, (Number.isFinite(currentCost) ? currentCost : Number(player.defaultCost)) + step));
+  costInput.value = formatNumber(nextCost);
+  renderRosterCard(row, player);
+  updateCostTotals();
+  saveLocalSetup();
 }
 
 function renderPlayerLibrary() {
@@ -461,8 +780,7 @@ function saveLocalSetup() {
       redName: $("#redName").value,
       blue: lineup("blue"),
       red: lineup("red"),
-      unique: $("#uniqueHeroes").checked,
-      sequential: $("#sequentialReveal").checked,
+      drawOptions: Object.fromEntries(DRAW_OPTION_IDS.map((id) => [id, Boolean($(`#${id}`)?.checked)])),
     }));
   } catch {
     // 本机偏好保存失败不影响主流程。
@@ -493,9 +811,12 @@ function restoreLocalSetup() {
         renderRosterCard(rows[index], matched);
       });
     }
-    $("#uniqueHeroes").checked = Boolean(saved.unique);
-    $("#sequentialReveal").checked = Boolean(saved.sequential);
+    for (const id of DRAW_OPTION_IDS) {
+      if (typeof saved.drawOptions?.[id] === "boolean") $(`#${id}`).checked = saved.drawOptions[id];
+    }
+    if (!saved.drawOptions && typeof saved.unique === "boolean") $("#uniqueHeroes").checked = saved.unique;
     updateCostTotals();
+    renderDrawOptionsStatus();
     state.setupRestored = true;
   } catch {
     // 旧缓存格式异常时从空名单开始。
@@ -506,16 +827,17 @@ function restoreLocalSetup() {
 function validateSetup() {
   const error = $("#rollError");
   const players = [...lineup("blue"), ...lineup("red")];
-  if (!state.pools) {
-    error.textContent = "分路数据尚未加载完成。";
-    return false;
-  }
-  if (players.some((player) => !player.id || !playerById(player.id)?.active)) {
-    error.textContent = "请从共享选手库中选择双方全部 10 名选手。";
+  const selectedCount = players.filter((player) => player.id && playerById(player.id)?.active).length;
+  if (selectedCount !== 10) {
+    error.textContent = `请先选满双方全部 10 名选手（当前已选择 ${selectedCount} / 10），再开启天命。`;
     return false;
   }
   if (new Set(players.map((player) => player.id)).size !== 10) {
     error.textContent = "同一名选手不能在本局重复出现。";
+    return false;
+  }
+  if (!state.pools) {
+    error.textContent = "分路数据尚未加载完成。";
     return false;
   }
   if (players.some((player) => !Number.isFinite(player.cost) || player.cost < 0)) {
@@ -671,6 +993,7 @@ function balancePlayers() {
 }
 
 function fillTestPlayers() {
+  if (!isAdmin()) return toast("只有管理员可以使用测试填充。");
   const available = shuffle(activePlayers());
   if (available.length < 10) {
     const message = `测试填充需要至少 10 名可用选手，当前只有 ${available.length} 名。`;
@@ -691,16 +1014,193 @@ function fillTestPlayers() {
   toast("已随机填充 10 名测试选手。");
 }
 
+const TEST_HERO_NAMES = ["盖伦", "赵信", "阿狸", "金克丝", "锤石"];
+
+function testModeEnabled() {
+  return isAdmin() && state.testDataEnabled;
+}
+
+function renderTestDataMode() {
+  const button = $("#testDataModeBtn");
+  if (!button) return;
+  const enabled = testModeEnabled();
+  button.textContent = `测试数据：${enabled ? "开" : "关"}`;
+  button.classList.toggle("active", enabled);
+  button.setAttribute("aria-pressed", String(enabled));
+  updateCollectorButton();
+}
+
+function testRosterPlayers() {
+  const roster = [];
+  const seen = new Set();
+  const addPlayer = (candidate) => {
+    const player = playerById(candidate?.id);
+    if (!player || seen.has(player.id)) return;
+    seen.add(player.id);
+    roster.push(player);
+  };
+  state.results.forEach((result) => addPlayer(result.player));
+  [...lineup("blue"), ...lineup("red")].forEach(addPlayer);
+  shuffle(activePlayers()).forEach(addPlayer);
+  return roster.slice(0, 10);
+}
+
+function testAccountName(player, index) {
+  return findAccountByPlayer(player.id) || `${player.displayName || `测试玩家${index + 1}`}#TEST`;
+}
+
+function testHero(lane, offset = 0) {
+  const pool = state.pools?.[lane] || [];
+  if (pool.length) return pool[Math.abs(offset) % pool.length];
+  const laneIndex = Math.max(0, LANES.findIndex(([key]) => key === lane));
+  return {
+    id: 0,
+    slug: championSlug(TEST_HERO_NAMES[laneIndex]),
+    name: TEST_HERO_NAMES[laneIndex],
+  };
+}
+
+function testParticipantStats(index, won, seed = 0) {
+  const kills = (index * 3 + seed) % 12;
+  const deaths = (index + seed) % 8;
+  const assists = 4 + ((index * 5 + seed) % 15);
+  return {
+    kills,
+    deaths,
+    assists,
+    goldEarned: 8_500 + index * 620 + seed * 17,
+    visionScore: 8 + ((index * 7 + seed) % 34),
+    damageDealt: 9_000 + index * 1_850 + seed * 41,
+    level: 12 + ((index + seed) % 7),
+    win: won,
+  };
+}
+
+function generateTestCollectedMatch() {
+  if (!testModeEnabled()) return false;
+  if (state.results.length !== 10 || state.results.some((result) => !playerById(result.player?.id))) {
+    const message = "请先完成一次包含 10 名选手的天命结果，再生成记录对局测试数据。";
+    $("#recordError").textContent = message;
+    toast(message);
+    return false;
+  }
+
+  const seed = Date.now() % 10_000;
+  const winner = seed % 2 ? "blue" : "red";
+  const participants = state.results.map((result, index) => {
+    const player = playerById(result.player.id);
+    const fallbackHero = testHero(result.lane, seed + index);
+    const hero = result.champion?.name ? result.champion : fallbackHero;
+    return {
+      team: result.team,
+      accountName: testAccountName(player, index),
+      championName: hero.name,
+      championId: Number(hero.id || 0),
+      stats: testParticipantStats(index, result.team === winner, seed),
+    };
+  });
+
+  state.collectedMatch = {
+    source: "测试数据（模拟客户端采集）",
+    collectedAt: new Date().toISOString(),
+    gameId: `TEST-${Date.now()}`,
+    playedAt: new Date().toISOString(),
+    durationSeconds: 1_620 + (seed % 540),
+    gameMode: "CLASSIC",
+    winner,
+    participants,
+    _testData: true,
+  };
+  state.matchedParticipants = new Map(
+    state.results.map((result, index) => [result.player.id, index]),
+  );
+  state.collectorNeedsInstall = false;
+  $("#recordError").textContent = "";
+  if (!$("#matchNote").value.trim()) $("#matchNote").value = "测试数据";
+  renderCollectedMatch();
+  toast("已生成一场模拟客户端对局，请核对后提交。");
+  return true;
+}
+
+function createTestRecentGames(count = 5) {
+  const roster = testRosterPlayers();
+  if (roster.length < 10) return [];
+  const now = Date.now();
+  return Array.from({ length: count }, (_, gameIndex) => {
+    const ordered = gameIndex === 0 ? [...roster] : shuffle(roster);
+    const winner = gameIndex % 2 === 0 ? "blue" : "red";
+    const participants = ordered.map((player, index) => {
+      const team = index < 5 ? "blue" : "red";
+      const lane = LANES[index % 5][0];
+      const hero = testHero(lane, gameIndex * 7 + index);
+      return {
+        team,
+        accountName: testAccountName(player, index),
+        championName: hero.name,
+        championId: Number(hero.id || 0),
+        stats: testParticipantStats(index, team === winner, gameIndex + 1),
+      };
+    });
+    return {
+      gameId: `TEST-HISTORY-${now}-${gameIndex + 1}`,
+      playedAt: new Date(now - (gameIndex + 1) * 86_400_000).toISOString(),
+      durationSeconds: 1_500 + gameIndex * 137,
+      gameMode: "CLASSIC",
+      gameType: "CUSTOM_GAME",
+      winner,
+      participants,
+      _testData: true,
+    };
+  });
+}
+
+function showTestRecentGames() {
+  const games = createTestRecentGames();
+  const status = $("#manualCollectorStatus");
+  if (!games.length) {
+    const message = "生成历史对局测试数据需要至少 10 名启用的选手。";
+    status.textContent = message;
+    $("#recentGamesList").classList.add("hidden");
+    toast(message);
+    return false;
+  }
+  status.textContent = `已生成 ${games.length} 场模拟自定义对局，点击选择：`;
+  renderRecentGames(games);
+  return true;
+}
+
+function toggleTestDataMode() {
+  if (!isAdmin()) return toast("只有管理员可以开启测试数据。");
+  state.testDataEnabled = !state.testDataEnabled;
+  renderTestDataMode();
+  if (state.testDataEnabled) {
+    if ($("#recordDialog").open && !state.collectedMatch) generateTestCollectedMatch();
+    if ($("#manualMatchDialog").open) showTestRecentGames();
+  }
+  toast(state.testDataEnabled
+    ? "测试数据已开启；记录和录入对局将使用模拟数据。"
+    : "测试数据已关闭；之后将恢复读取本机客户端。");
+}
+
 function assignTeam(players, team) {
-  const shuffled = shuffle(players);
   return LANES.map(([lane, laneLabel, abbreviation], index) => ({
     team,
-    player: shuffled[index],
+    player: players[index],
     lane,
     laneLabel,
     abbreviation,
     champion: null,
   }));
+}
+
+function randomizeTeams() {
+  const players = shuffle([...lineup("blue"), ...lineup("red")]);
+  setLineup("blue", players.slice(0, 5));
+  setLineup("red", players.slice(5));
+}
+
+function randomizeTeamPositions() {
+  for (const side of ["blue", "red"]) setLineup(side, shuffle(lineup(side)));
 }
 
 function generateBans() {
@@ -723,30 +1223,56 @@ function pickHeroes(items, unique, banned) {
   const used = new Set();
   for (const item of shuffle(items)) {
     const candidates = state.pools[item.lane].filter((hero) => !banned.has(hero.slug) && (!unique || !used.has(hero.slug)));
-    if (!candidates.length) throw new Error(`${item.laneLabel}英雄池不足，无法满足当前规则。`);
+    if (!candidates.length) {
+      const hint = $("#globalBp")?.checked ? "，请清空全局 BP 英雄池或调整规则" : "";
+      throw new Error(`${item.laneLabel}英雄池不足，无法满足当前规则${hint}。`);
+    }
     item.champion = weightedChoice(candidates);
     used.add(item.champion.slug);
   }
   return items;
 }
 
+function withoutRandomHeroes(items) {
+  return items.map((item) => ({
+    ...item,
+    champion: {
+      id: 0,
+      slug: "",
+      name: "",
+      image: "",
+      weight: 0,
+      banRate: 0,
+    },
+  }));
+}
+
 function roll() {
   if (!validateSetup()) return;
+  if ($("#randomTeams").checked) randomizeTeams();
+  if ($("#randomPositions").checked) randomizeTeamPositions();
+  if ($("#globalBp").checked) ensureGlobalBpRoster();
   saveLocalSetup();
   try {
     const blue = assignTeam(lineup("blue"), "blue");
     const red = assignTeam(lineup("red"), "red");
-    state.bans = generateBans();
-    state.results = pickHeroes([...blue, ...red], $("#uniqueHeroes").checked, new Set(state.bans.map((hero) => hero.slug)));
-    state.order = shuffle(state.results.map((_, index) => index));
+    state.bans = [];
+    state.results = $("#randomHeroes").checked
+      ? pickHeroes(
+        [...blue, ...red],
+        $("#uniqueHeroes").checked,
+        $("#globalBp").checked ? new Set(state.globalBpUsed) : new Set(),
+      )
+      : withoutRandomHeroes([...blue, ...red]);
+    state.order = rosterRevealOrder();
     state.revealed = 0;
     state.draftId = crypto.randomUUID();
     state.submitted = false;
     state.collectedMatch = null;
     state.matchedParticipants = new Map();
+    state.globalBpCommittedDraftId = null;
     renderRoll();
-    $("#setupSection").classList.add("hidden");
-    $("#arena").classList.add("show");
+    requestAnimationFrame(() => requestAnimationFrame(runFateSequence));
   } catch (error) {
     $("#rollError").textContent = error.message;
   }
@@ -760,93 +1286,266 @@ function renderBans() {
 
 function renderRoll() {
   renderBans();
-  const teams = [["blue", $("#blueName").value.trim()], ["red", $("#redName").value.trim()]];
-  $("#results").innerHTML = teams.map(([team, name]) => `
-    <div class="result-team ${team === "red" ? "red" : ""}">
-      <div class="result-title">${escapeHtml(name)}</div>
-      <div class="cards">${state.results.map((result, index) => result.team === team
-        ? `<article class="card" data-index="${index}"><div class="card-inner"><div class="face back"><span>?</span></div><div class="face front"></div></div></article>`
-        : "").join("")}</div>
-    </div>`).join("");
-  $("#revealBtn").textContent = $("#sequentialReveal").checked ? "揭晓下一位" : "全部揭晓";
-  $("#revealBtn").classList.remove("hidden");
+  $("#results").innerHTML = "";
+  $("#setupSection").classList.add("roll-active");
+  setDrawOptionsLocked(true);
+  $$(".roster-card-row").forEach((row) => {
+    row.classList.remove("has-roll-result");
+    row.classList.add("is-drawing");
+  });
+  $("#rollBtn").classList.add("hidden");
+  $("#backBtn").classList.remove("hidden");
+  $("#backBtn").disabled = true;
+  $("#revealBtn").classList.add("hidden");
   $("#recordBtn").classList.add("hidden");
   $("#recordBtn").disabled = false;
   $("#recordBtn").textContent = "记录本局";
   $("#againBtn").classList.add("hidden");
-  updateProgress();
 }
 
-function fillFront(card, result, index) {
+function rosterRevealOrder() {
+  const order = [];
+  for (let slot = 0; slot < 5; slot += 1) {
+    for (const side of ["blue", "red"]) {
+      const playerId = $$(`#${side}Players .player-name`)[slot]?.dataset.playerId;
+      const index = state.results.findIndex((result) => result.player.id === playerId);
+      if (index >= 0) order.push(index);
+    }
+  }
+  return order;
+}
+
+function rosterRowForResult(result) {
+  return $$(".roster-card-row").find((row) => row.querySelector(".player-name")?.dataset.playerId === result.player.id);
+}
+
+function fillRosterResult(result, index) {
   const champion = result.champion;
-  card.querySelector(".front").innerHTML = `
-    <img class="portrait" alt="${escapeHtml(champion.name)}" src="${portrait(champion)}">
-    <div class="card-copy">
-      <div class="meta-row"><div class="lane">${result.laneLabel} · ${result.abbreviation}</div><div class="pick-rate-label">登场率 ${formatNumber(champion.weight, 2)}%</div></div>
-      <div class="summoner">${escapeHtml(result.player.name)}</div>
-      <div class="champion-line"><div class="champion">${escapeHtml(champion.name)}</div><button class="reroll" data-reroll="${index}">再次随机</button></div>
-    </div><div class="badge">${result.abbreviation}</div>`;
-  const image = card.querySelector("img");
-  image.addEventListener("error", () => { image.src = avatar(champion); }, { once: true });
+  const row = rosterRowForResult(result);
+  if (!row) return;
+  const image = row.querySelector("[data-result-image]");
+  const hasChampion = Boolean(champion?.slug);
+  image.hidden = !hasChampion;
+  image.alt = hasChampion ? champion.name : "";
+  if (hasChampion) image.src = portrait(champion);
+  row.querySelector("[data-result-lane]").textContent = `${result.laneLabel} · ${result.abbreviation}`;
+  row.querySelector("[data-result-champion]").textContent = hasChampion ? champion.name : "英雄自选";
+  const rate = row.querySelector("[data-result-rate]");
+  rate.hidden = !hasChampion;
+  rate.textContent = hasChampion ? `登场率 ${formatNumber(champion.weight, 2)}%` : "";
+  row.querySelector("[data-result-player]").textContent = result.player.name;
+  row.classList.toggle("hero-self-pick", !hasChampion);
+  row.classList.remove("soul-extracting", "soul-restored");
+  row.dataset.resultIndex = String(index);
+  row.classList.add("has-roll-result");
+  if (hasChampion) image.addEventListener("error", () => { image.src = avatar(champion); }, { once: true });
+  requestAnimationFrame(() => row.classList.remove("is-drawing"));
+}
+
+function commitGlobalBpResults(snapshot) {
+  if (!$("#globalBp").checked || state.globalBpCommittedDraftId === state.draftId) return false;
+  (snapshot?.participants || []).forEach((participant) => {
+    const championName = participant.champion?.name || "";
+    const catalogMatch = state.pools
+      ? Object.values(state.pools).flat().find((hero) => normalizeName(hero.name) === normalizeName(championName))
+      : null;
+    const draftMatch = state.results.find((result) => result.player.id === participant.playerId);
+    const slug = participant.champion?.slug
+      || catalogMatch?.slug
+      || (normalizeName(draftMatch?.champion?.name || "") === normalizeName(championName) ? draftMatch?.champion?.slug : "");
+    if (slug) state.globalBpUsed.add(slug);
+  });
+  state.globalBpCommittedDraftId = state.draftId;
+  state.globalBpRounds += 1;
+  const cycleComplete = state.globalBpRounds >= 5;
+  if (cycleComplete) {
+    state.globalBpRounds = 0;
+    state.globalBpUsed = new Set();
+  }
+  saveGlobalBpState();
+  renderDrawOptionsStatus();
+  return cycleComplete;
 }
 
 function finishReveal() {
   $("#revealBtn").classList.add("hidden");
+  $("#revealBtn").disabled = false;
+  $("#backBtn").disabled = false;
   $("#recordBtn").classList.remove("hidden");
   $("#againBtn").classList.remove("hidden");
 }
 
 function revealNext() {
-  if (state.busy || state.revealed >= 10) return;
+  revealAll();
+}
+
+function waitForFate(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function cleanupFateFx() {
+  const layer = $("#fateFxLayer");
+  if (!layer) return;
+  layer.replaceChildren();
+  layer.classList.remove("active");
+  document.documentElement.classList.remove("fate-ritual-active");
+  $$(".roster-card-row").forEach((row) => row.classList.remove("soul-extracting", "soul-restored"));
+}
+
+function cardSoulPoint(row) {
+  const rect = row.querySelector(".roster-card")?.getBoundingClientRect();
+  return rect
+    ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+    : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+}
+
+async function runFateSequence() {
+  if (state.busy || state.revealed >= state.order.length) return;
+  const sequence = ++state.fateSequence;
+  const ordered = state.order
+    .map((index) => ({ index, result: state.results[index], row: rosterRowForResult(state.results[index]) }))
+    .filter((item) => item.row);
+  if (!ordered.length) return;
+
   state.busy = true;
-  const index = state.order[state.revealed];
-  const card = $(`.card[data-index="${index}"]`);
-  fillFront(card, state.results[index], index);
-  requestAnimationFrame(() => card.classList.add("revealed"));
-  state.revealed += 1;
-  updateProgress();
-  setTimeout(() => {
+  $("#backBtn").disabled = true;
+  $("#revealBtn").disabled = true;
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reducedMotion) {
+    ordered.forEach(({ index, result }) => fillRosterResult(result, index));
+    state.revealed = ordered.length;
     state.busy = false;
-    if (state.revealed === 10) finishReveal();
-  }, 650);
+    finishReveal();
+    return;
+  }
+
+  cleanupFateFx();
+  const layer = $("#fateFxLayer");
+  const center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  const points = ordered.map(({ row }) => cardSoulPoint(row));
+  const souls = [];
+  layer.classList.add("active");
+  document.documentElement.classList.add("fate-ritual-active");
+
+  await waitForFate(760);
+  if (sequence !== state.fateSequence) return;
+  ordered.forEach(({ row, result }, index) => {
+    row.classList.add("soul-extracting");
+    const soul = document.createElement("span");
+    soul.className = `fate-soul fate-soul-${result.team}`;
+    soul.style.left = `${points[index].x}px`;
+    soul.style.top = `${points[index].y}px`;
+    layer.append(soul);
+    souls.push(soul);
+  });
+
+  await waitForFate(180);
+  if (sequence !== state.fateSequence) return;
+  souls.forEach((soul, index) => {
+    const point = points[index];
+    soul.animate([
+      { left: `${point.x}px`, top: `${point.y}px`, opacity: 0, transform: "translate(-50%, -50%) scale(2.8)" },
+      { left: `${point.x}px`, top: `${point.y}px`, opacity: 1, transform: "translate(-50%, -50%) scale(1.5)", offset: 0.2 },
+      { left: `${point.x}px`, top: `${point.y}px`, opacity: 1, transform: "translate(-50%, -50%) scale(0.38)", offset: 0.46 },
+      { left: `${center.x}px`, top: `${center.y}px`, opacity: 1, transform: "translate(-50%, -50%) scale(0.68)", offset: 0.88 },
+      { left: `${center.x}px`, top: `${center.y}px`, opacity: 0.82, transform: "translate(-50%, -50%) scale(0.16)" },
+    ], {
+      duration: 1500,
+      delay: index * 24,
+      easing: "cubic-bezier(0.42, 0, 0.18, 1)",
+      fill: "forwards",
+    });
+  });
+
+  await waitForFate(1710);
+  if (sequence !== state.fateSequence) return;
+  ordered.forEach(({ row }) => row.classList.remove("soul-extracting"));
+  const core = document.createElement("span");
+  core.className = "fate-core";
+  core.style.left = `${center.x}px`;
+  core.style.top = `${center.y}px`;
+  layer.append(core);
+  core.animate([
+    { opacity: 0, transform: "translate(-50%, -50%) scale(0.12)" },
+    { opacity: 1, transform: "translate(-50%, -50%) scale(1.9)", offset: 0.42 },
+    { opacity: 1, transform: "translate(-50%, -50%) scale(1.15)", offset: 0.68 },
+    { opacity: 0, transform: "translate(-50%, -50%) scale(3.8)" },
+  ], {
+    duration: 720,
+    easing: "cubic-bezier(0.18, 0.72, 0.2, 1)",
+    fill: "forwards",
+  });
+
+  await waitForFate(430);
+  if (sequence !== state.fateSequence) return;
+  souls.forEach((soul, index) => {
+    const point = points[index];
+    soul.animate([
+      { left: `${center.x}px`, top: `${center.y}px`, opacity: 0.95, transform: "translate(-50%, -50%) scale(0.36)" },
+      { left: `${center.x}px`, top: `${center.y}px`, opacity: 1, transform: "translate(-50%, -50%) scale(1.35)", offset: 0.12 },
+      { left: `${point.x}px`, top: `${point.y}px`, opacity: 1, transform: "translate(-50%, -50%) scale(0.7)", offset: 0.82 },
+      { left: `${point.x}px`, top: `${point.y}px`, opacity: 0, transform: "translate(-50%, -50%) scale(2.4)" },
+    ], {
+      duration: 620,
+      easing: "cubic-bezier(0.12, 0.76, 0.2, 1)",
+      fill: "forwards",
+    });
+  });
+  await waitForFate(620);
+  if (sequence !== state.fateSequence) return;
+  ordered.forEach(({ row, result, index: resultIndex }) => {
+    fillRosterResult(result, resultIndex);
+    row.classList.add("soul-restored");
+    setTimeout(() => row.classList.remove("soul-restored"), 950);
+  });
+  souls.forEach((soul) => soul.remove());
+
+  if (sequence !== state.fateSequence) return;
+  state.revealed = ordered.length;
+  await waitForFate(460);
+  if (sequence !== state.fateSequence) return;
+  cleanupFateFx();
+  state.busy = false;
+  finishReveal();
 }
 
 function revealAll() {
-  if (state.busy || state.revealed >= 10) return;
-  state.busy = true;
-  state.results.forEach((result, index) => fillFront($(`.card[data-index="${index}"]`), result, index));
-  requestAnimationFrame(() => $$(".card").forEach((card) => card.classList.add("revealed")));
-  state.revealed = 10;
-  updateProgress();
-  setTimeout(() => {
-    state.busy = false;
-    finishReveal();
-  }, 650);
-}
-
-function updateProgress() {
-  $("#progress").textContent = state.revealed === 10 ? "全部揭晓 · 10 / 10" : `等待揭晓 · ${state.revealed} / 10`;
+  runFateSequence();
 }
 
 function rerollHero(index) {
   if (state.submitted) return;
   const result = state.results[index];
-  if (!result) return;
-  const blocked = new Set([result.champion.slug, ...state.bans.map((hero) => hero.slug)]);
+  if (!result?.champion?.slug) return;
+  const blocked = new Set([
+    result.champion.slug,
+    ...state.bans.map((hero) => hero.slug),
+    ...($("#globalBp").checked ? state.globalBpUsed : []),
+  ]);
   if ($("#uniqueHeroes").checked) state.results.forEach((item, itemIndex) => itemIndex !== index && blocked.add(item.champion.slug));
   const candidates = state.pools[result.lane].filter((hero) => !blocked.has(hero.slug));
   if (!candidates.length) return toast(`${result.laneLabel}没有可用的新英雄。`);
   result.champion = weightedChoice(candidates);
   state.collectedMatch = null;
   state.matchedParticipants = new Map();
-  fillFront($(`.card[data-index="${index}"]`), result, index);
+  fillRosterResult(result, index);
 }
 
 function backToSetup() {
+  state.fateSequence += 1;
   state.busy = false;
-  $("#arena").classList.remove("show");
-  $("#setupSection").classList.remove("hidden");
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  cleanupFateFx();
+  $("#setupSection").classList.remove("roll-active");
+  $$(".roster-card-row").forEach((row) => {
+    row.classList.remove("is-drawing", "has-roll-result");
+    delete row.dataset.resultIndex;
+  });
+  $("#rollBtn").classList.remove("hidden");
+  $("#backBtn").classList.add("hidden");
+  $("#revealBtn").classList.add("hidden");
+  $("#recordBtn").classList.add("hidden");
+  $("#againBtn").classList.add("hidden");
+  setDrawOptionsLocked(false);
 }
 
 function resetSetup() {
@@ -859,13 +1558,17 @@ function resetSetup() {
   $$(".cost-input").forEach((input) => { input.value = "1"; });
   $("#blueName").value = "蓝方";
   $("#redName").value = "红方";
-  $("#uniqueHeroes").checked = false;
-  $("#sequentialReveal").checked = false;
+  $("#randomTeams").checked = true;
+  $("#randomPositions").checked = true;
+  $("#randomHeroes").checked = true;
+  $("#uniqueHeroes").checked = true;
+  $("#globalBp").checked = true;
   $("#rollError").textContent = "";
   state.collectedMatch = null;
   state.matchedParticipants = new Map();
   localStorage.removeItem("lgg-setup-v3");
   updateCostTotals();
+  renderDrawOptionsStatus();
 }
 
 function openRecordDialog() {
@@ -875,7 +1578,14 @@ function openRecordDialog() {
   $("#playedAt").value = localDateTimeValue();
   renderCollectedMatch();
   $("#recordDialog").showModal();
-  refreshCollectorConnection();
+  if (testModeEnabled()) {
+    if (!state.collectedMatch) generateTestCollectedMatch();
+  } else {
+    refreshCollectorConnection();
+  }
+  if (state.collectedMatch?._testData && !$("#matchNote").value.trim()) {
+    $("#matchNote").value = "测试数据";
+  }
 }
 
 async function collectorRequest(path, timeout = 2500) {
@@ -898,12 +1608,22 @@ async function collectorIsRunning() {
 }
 
 function updateCollectorButton() {
+  if (testModeEnabled()) {
+    $("#collectMatchBtn").textContent = state.collectedMatch ? "重新生成测试数据" : "生成测试数据";
+    return;
+  }
   $("#collectMatchBtn").textContent = state.collectorNeedsInstall
     ? "下载安装采集器"
     : (state.collectedMatch ? "重新采集" : "采集数据");
 }
 
 async function refreshCollectorConnection() {
+  if (testModeEnabled()) {
+    state.collectorNeedsInstall = false;
+    updateCollectorButton();
+    if (!state.collectedMatch) $("#collectorStatus").textContent = "测试数据已开启，将生成模拟客户端对局。";
+    return true;
+  }
   if (await collectorIsRunning()) {
     state.collectorNeedsInstall = false;
     updateCollectorButton();
@@ -1212,6 +1932,15 @@ function bindDragEvents() {
 async function collectMatchData() {
   const button = $("#collectMatchBtn");
   const error = $("#recordError");
+  if (testModeEnabled()) {
+    button.disabled = true;
+    try {
+      generateTestCollectedMatch();
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
   if (state.collectorNeedsInstall) {
     downloadCollectorInstaller();
     return;
@@ -1312,7 +2041,6 @@ async function collectMatchData() {
         const pIdx = participants.indexOf(participant);
         if (pIdx >= 0) {
           state.matchedParticipants.set(result.player.id, pIdx);
-          saveBidirectionalMapping(result.player.id, participant.accountName);
         }
       }
     }
@@ -1363,12 +2091,20 @@ async function submitMatch(event) {
   if (state.submitted) return;
   const button = $("#submitMatchBtn");
   const error = $("#recordError");
+  let snapshot = null;
+  let confirmedMappings = [];
   try {
     const winner = new FormData($("#recordForm")).get("winner");
     if (!winner) throw new Error("请选择胜方。");
     const playedAt = new Date($("#playedAt").value);
     if (Number.isNaN(playedAt.getTime())) throw new Error("请填写有效比赛时间。");
-    const snapshot = matchSnapshot();
+    snapshot = matchSnapshot();
+    confirmedMappings = snapshot.participants
+      .filter((participant) => participant.playerId && participant.accountName && playerById(participant.playerId))
+      .map((participant) => ({
+        playerId: participant.playerId,
+        accountName: participant.accountName,
+      }));
     // 将 accountName 归一化为 riot_accounts 引用，避免数据冗余
     await upsertRiotAccounts(snapshot.participants);
     const payload = {
@@ -1388,22 +2124,26 @@ async function submitMatch(event) {
     error.textContent = "";
     const { error: insertError } = await state.supabase.from("matches").insert(payload);
     if (insertError) throw insertError;
+    confirmedMappings.forEach(({ playerId, accountName }) => saveBidirectionalMapping(playerId, accountName));
     state.submitted = true;
     $("#recordDialog").close();
     $("#recordBtn").disabled = true;
     $("#recordBtn").textContent = "本局已记录";
     $$(".reroll").forEach((item) => { item.disabled = true; });
-    toast("比赛已写入共享战绩。");
+    const cycleComplete = commitGlobalBpResults(snapshot);
+    toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已写入共享战绩。");
   } catch (caught) {
     const existing = state.draftId
       ? await state.supabase.from("matches").select("id").eq("id", state.draftId).maybeSingle()
       : { data: null };
     if (existing.data?.id) {
+      confirmedMappings.forEach(({ playerId, accountName }) => saveBidirectionalMapping(playerId, accountName));
       state.submitted = true;
       $("#recordDialog").close();
       $("#recordBtn").disabled = true;
       $("#recordBtn").textContent = "本局已记录";
-      toast("比赛已成功记录。");
+      const cycleComplete = commitGlobalBpResults(snapshot || matchSnapshot());
+      toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已成功记录。");
     } else {
       error.textContent = caught.message || "提交失败，请检查网络后重试。";
     }
@@ -1416,10 +2156,13 @@ async function submitMatch(event) {
 // ---- 手动录入历史对局 ----
 
 function openManualMatchDialog() {
-  $("#manualCollectorStatus").textContent = "点击按钮选择最近的自定义对局";
+  $("#manualCollectorStatus").textContent = testModeEnabled()
+    ? "正在生成模拟自定义对局…"
+    : "点击按钮选择最近的自定义对局";
   $("#recentGamesList").classList.add("hidden");
   $("#recentGamesList").innerHTML = "";
   $("#manualMatchDialog").showModal();
+  if (testModeEnabled()) showTestRecentGames();
 }
 
 async function fetchRecentGames() {
@@ -1427,6 +2170,15 @@ async function fetchRecentGames() {
   const status = $("#manualCollectorStatus");
   const list = $("#recentGamesList");
   btn.disabled = true;
+  if (testModeEnabled()) {
+    try {
+      status.textContent = "正在重新生成模拟对局…";
+      showTestRecentGames();
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
   status.textContent = "正在读取客户端…";
   try {
     if (!await collectorIsRunning()) {
@@ -1585,7 +2337,11 @@ function selectRecentGame(game) {
     const p = participants[i] || {};
     const team = p.team || (i < 5 ? "blue" : "red");
     const posIdx = results.filter(r => r.team === team).length;
-    const matchedPlayer = p.accountName ? findPlayerByAccount(p.accountName) : null;
+    const mappedPlayer = p.accountName ? findPlayerByAccount(p.accountName) : null;
+    const testPlayer = game._testData && p.accountName
+      ? playerByName(p.accountName.split("#")[0])
+      : null;
+    const matchedPlayer = mappedPlayer || testPlayer;
 
     results.push({
       player: {
@@ -1611,7 +2367,7 @@ function selectRecentGame(game) {
   }
 
   const collected = {
-    source: "手动录入（客户端采集）",
+    source: game._testData ? "手动录入（测试数据）" : "手动录入（客户端采集）",
     collectedAt: new Date().toISOString(),
     gameId: game.gameId,
     playedAt: game.playedAt,
@@ -1634,6 +2390,7 @@ function selectRecentGame(game) {
       },
     })),
     _manualGameId: game.gameId,
+    _testData: Boolean(game._testData),
   };
 
   // 预匹配
@@ -1679,35 +2436,51 @@ function scoreLabel(match) {
 
 function matchCard(match, includeActions = true) {
   const hasDetail = Array.isArray(match.participants);
-  const blue = (match.participants || []).filter((slot) => slot.team === "blue");
-  const red = (match.participants || []).filter((slot) => slot.team === "red");
+  const laneOrder = new Map(LANES.map(([lane, laneLabel], index) => [lane, index]).concat(LANES.map(([, laneLabel], index) => [laneLabel, index])));
+  const sortLineup = (slots) => [...slots].sort((a, b) => {
+    const aRank = laneOrder.get(a.lane) ?? laneOrder.get(a.laneLabel) ?? 99;
+    const bRank = laneOrder.get(b.lane) ?? laneOrder.get(b.laneLabel) ?? 99;
+    return aRank - bRank;
+  });
+  const blue = sortLineup((match.participants || []).filter((slot) => slot.team === "blue"));
+  const red = sortLineup((match.participants || []).filter((slot) => slot.team === "red"));
   const mini = (slots) => slots.map((slot) => `<span>${escapeHtml(slot.playerName || slot.accountName || "?")} · ${escapeHtml(slot.champion?.name || "—")}</span>`).join("");
   const detailRow = (slot) => `
-    <tr class="${slot.team}">
-      <td>${escapeHtml(slot.laneLabel || "")}</td>
-      <td><strong>${escapeHtml(slot.playerName)}</strong></td>
-      <td>${escapeHtml(slot.champion?.name || "—")}</td>
-      <td>${escapeHtml(resolveAccountName(slot) || "—")}</td>
-      <td class="num">${slot.stats?.kills ?? 0} / ${slot.stats?.deaths ?? 0} / ${slot.stats?.assists ?? 0}</td>
-    </tr>`;
+    <div class="match-side-row">
+      <span class="match-lane">${escapeHtml(slot.laneLabel || "—")}</span>
+      <span class="match-player"><strong>${escapeHtml(slot.playerName || "?")}</strong><small>${escapeHtml(resolveAccountName(slot) || "—")}</small></span>
+      <span class="match-champion">${escapeHtml(slot.champion?.name || "—")}</span>
+      <span class="match-kda">${slot.stats?.kills ?? 0} / ${slot.stats?.deaths ?? 0} / ${slot.stats?.assists ?? 0}</span>
+    </div>`;
+  const detailTeam = (side, slots, teamName) => `
+    <section class="match-side match-side-${side}">
+      <div class="match-side-head">
+        <strong>${escapeHtml(teamName)}</strong>
+        <span class="${match.winner === side ? "win" : "loss"}">${match.winner === side ? "胜方" : "败方"}</span>
+      </div>
+      <div class="match-side-columns" aria-hidden="true">
+        <span>分路</span><span>选手 / 账号</span><span>英雄</span><span>K / D / A</span>
+      </div>
+      <div class="match-side-lineup">${slots.map(detailRow).join("")}</div>
+    </section>`;
   return `
     <article class="match-card">
       <div class="match-main match-toggle" data-match-id="${match.id}" title="点击查看详情">
         <div class="match-team ${match.winner === "blue" ? "winner" : ""}">
           <strong>${escapeHtml(match.blueTeam || "蓝方")}</strong>
+          ${hasDetail ? `<div class="lineup-mini">${mini(blue)}</div>` : ""}
         </div>
         <div class="versus"><div class="score">${scoreLabel(match)}</div><small>${formatDate(match.playedAt)}</small></div>
         <div class="match-team red ${match.winner === "red" ? "winner" : ""}">
           <strong>${escapeHtml(match.redTeam || "红方")}</strong>
+          ${hasDetail ? `<div class="lineup-mini">${mini(red)}</div>` : ""}
         </div>
       </div>
       <div class="match-detail hidden" data-match-id="${match.id}">
         ${hasDetail ? `
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>分路</th><th>选手</th><th>英雄</th><th>客户端账号</th><th>K / D / A</th></tr></thead>
-            <tbody>${[...blue, ...red].map(detailRow).join("")}</tbody>
-          </table>
+        <div class="match-comparison">
+          ${detailTeam("blue", blue, match.blueTeam || "蓝方")}
+          ${detailTeam("red", red, match.redTeam || "红方")}
         </div>` : `<div class="loading-detail">点击加载详情…</div>`}
         <div class="match-meta">
           ${match.durationSeconds ? `<span>时长：${Math.round(match.durationSeconds / 60)}分钟</span>` : ""}
@@ -1796,6 +2569,9 @@ function renderHeroStats() {
 function renderAdmin() {
   if (!state.member) return;
   const admin = isAdmin();
+  if (!admin) state.testDataEnabled = false;
+  $$(".admin-only").forEach((element) => element.classList.toggle("hidden", !admin));
+  renderTestDataMode();
   $("#playerForm").classList.toggle("hidden", !admin);
   const playerQuery = ($("#adminPlayerSearch")?.value || "").trim();
   const players = playerQuery
@@ -1978,6 +2754,7 @@ async function refreshPlayers() {
   restoreLocalSetup();
   syncRosterCostsFromLibrary();
   if ($("#playerLibraryDialog").open) renderPlayerLibrary();
+  if ($("#localMappingsDialog").open) renderLocalMappings();
   renderAllSharedData();
 }
 
@@ -2102,6 +2879,7 @@ async function handleAuthUser(user) {
     clearSubscriptions();
     state.user = null;
     state.member = null;
+    state.testDataEnabled = false;
     $("#app").classList.add("hidden");
     $("#authGate").classList.remove("hidden");
     return;
@@ -2259,14 +3037,17 @@ function bindEvents() {
     clearSubscriptions();
     state.user = null;
     state.member = null;
+    state.testDataEnabled = false;
     $("#app").classList.add("hidden");
     $("#authGate").classList.remove("hidden");
   });
   $$(".nav-btn").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#rollBtn").addEventListener("click", roll);
   $("#testFillBtn").addEventListener("click", fillTestPlayers);
-  $("#balanceBtn").addEventListener("click", balancePlayers);
-  $("#revealBtn").addEventListener("click", () => ($("#sequentialReveal").checked ? revealNext() : revealAll()));
+  $("#testDataModeBtn").addEventListener("click", toggleTestDataMode);
+  $("#clearGlobalBpBtn").addEventListener("click", clearGlobalBp);
+  $("#globalBpDetailsBtn").addEventListener("click", openGlobalBpDetails);
+  $("#revealBtn").addEventListener("click", revealAll);
   $("#backBtn").addEventListener("click", backToSetup);
   $("#againBtn").addEventListener("click", roll);
   $("#recordBtn").addEventListener("click", openRecordDialog);
@@ -2276,6 +3057,26 @@ function bindEvents() {
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
   $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
   $("#manualCollectBtn").addEventListener("click", fetchRecentGames);
+  $("#localMappingsBtn").addEventListener("click", openLocalMappings);
+  $("#localMappingForm").addEventListener("submit", saveLocalMapping);
+  $("#localMappingsList").addEventListener("click", (event) => {
+    const edit = event.target.closest("[data-edit-local-mapping]");
+    const remove = event.target.closest("[data-delete-local-mapping]");
+    if (edit) {
+      const playerId = edit.dataset.editLocalMapping;
+      $("#localMappingPlayer").value = playerId;
+      $("#localMappingGameId").value = findAccountByPlayer(playerId);
+      $("#localMappingGameId").focus();
+      return;
+    }
+    if (remove) {
+      const playerId = remove.dataset.deleteLocalMapping;
+      const playerName = playerById(playerId)?.displayName || "该玩家";
+      removeBidirectionalMapping(playerId);
+      renderLocalMappings();
+      toast(`已删除 ${playerName} 的本地游戏 ID 映射。`);
+    }
+  });
   $("#playerLibrarySearch").addEventListener("input", renderPlayerLibrary);
   $("#clearPlayerCardBtn").addEventListener("click", clearPlayerCard);
   $("#playerLibraryCards").addEventListener("click", (event) => {
@@ -2294,17 +3095,25 @@ function bindEvents() {
     if (button) rerollHero(Number(button.dataset.reroll));
   });
   document.addEventListener("click", (event) => {
+    const costControl = event.target.closest("[data-temp-cost-step], [data-temp-cost-reset]");
+    if (costControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      changeTemporaryRosterCost(costControl);
+      return;
+    }
     const trigger = event.target.closest("[data-open-player-library]");
-    if (trigger) openPlayerLibrary(trigger.closest(".player-row"));
+    if (trigger && !$("#setupSection").classList.contains("roll-active")) openPlayerLibrary(trigger.closest(".player-row"));
   });
   document.addEventListener("input", (event) => {
     if (event.target.matches(".player-name")) {
       syncPlayerInput(event.target);
       renderPlayerSuggestions(event.target);
     }
-    if (event.target.matches(".cost-input,.team-name,#uniqueHeroes,#sequentialReveal")) {
+    if (event.target.matches(".cost-input,.team-name") || event.target.closest(".draw-option")) {
       updateCostTotals();
       saveLocalSetup();
+      renderDrawOptionsStatus();
     }
   });
   document.addEventListener("focusin", (event) => {
@@ -2400,15 +3209,17 @@ function bindEvents() {
   $("#heroLane").addEventListener("change", renderHeroStats);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") return;
-    if ($("#arena").classList.contains("show") && (event.code === "Space" || event.code === "Enter") && !event.target.closest("button,input,select,textarea,dialog")) {
+    if ($("#setupSection").classList.contains("roll-active") && (event.code === "Space" || event.code === "Enter") && !event.target.closest("button,input,select,textarea,dialog")) {
       event.preventDefault();
-      $("#sequentialReveal").checked ? revealNext() : revealAll();
+      revealAll();
     }
   });
 }
 
 makePlayerInputs("blue");
 makePlayerInputs("red");
+loadGlobalBpState();
 updateCostTotals();
+renderDrawOptionsStatus();
 bindEvents();
 initializeSupabase();
