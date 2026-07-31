@@ -2,8 +2,8 @@ import { supabaseConfig, accountAliases } from "./supabase-config.js";
 import { computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
 import { createSearchForms, fuzzyMatches } from "./search-core.js";
 import { matchCollectedParticipants, championSlug } from "./collector-core.js";
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/+esm";
-import { pinyin } from "https://cdn.jsdelivr.net/npm/pinyin-pro@3.28.2/+esm";
+import { createClient } from "@supabase/supabase-js";
+import { pinyin } from "pinyin-pro";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -43,6 +43,7 @@ const state = {
   realtimeChannel: null,
   riotAccounts: new Map(),
   playerStats: new Map(),
+  playerPickerInput: null,
 };
 
 function escapeHtml(value = "") {
@@ -210,16 +211,121 @@ function makePlayerInputs(side) {
   container.innerHTML = "";
   for (let index = 1; index <= 5; index += 1) {
     container.insertAdjacentHTML("beforeend", `
-      <label class="player-row">
-        <span class="number">0${index}</span>
-        <span class="player-search">
-          <input class="player-name search-input" data-side="${side}" data-slot="${index - 1}" maxlength="24" autocomplete="off" placeholder="搜索选手 ${index}" aria-label="${side === "blue" ? "蓝方" : "红方"}选手 ${index}" aria-autocomplete="list" aria-expanded="false">
-          <span class="player-suggestions hidden" role="listbox"></span>
-        </span>
-        <span class="cost-label">费</span>
-        <input class="cost-input" type="number" min="0" step="0.5" value="1" aria-label="选手 ${index} 费用">
-      </label>`);
+      <div class="player-row roster-card-row">
+        <input class="player-name" type="hidden" data-side="${side}" data-slot="${index - 1}" value="">
+        <button class="roster-card is-empty" type="button" data-open-player-library aria-label="${side === "blue" ? "蓝方" : "红方"}第 ${index} 张牌，选择选手">
+          <span class="roster-card-empty">
+            <strong>?</strong>
+            <small>选择选手</small>
+          </span>
+          <span class="roster-card-selected">
+            <span class="roster-player-initial" data-card-initial>?</span>
+            <strong data-card-name>未选择</strong>
+            <small>点击替换</small>
+          </span>
+        </button>
+        <label class="roster-card-cost">
+          <span class="cost-gem" aria-hidden="true"></span>
+          <input class="cost-input" type="number" min="0" step="0.5" value="1" readonly tabindex="-1" aria-label="选手 ${index} 费用">
+        </label>
+      </div>`);
   }
+}
+
+function renderRosterCard(row, player = null) {
+  if (!row) return;
+  const button = row.querySelector(".roster-card");
+  if (!button) return;
+  const input = row.querySelector(".player-name");
+  const sideLabel = input?.dataset.side === "red" ? "红方" : "蓝方";
+  const slot = Number(input?.dataset.slot || 0) + 1;
+  const hasPlayer = Boolean(player?.id);
+  row.classList.toggle("has-player", hasPlayer);
+  button.classList.toggle("is-empty", !hasPlayer);
+  button.querySelector("[data-card-initial]").textContent = hasPlayer ? player.displayName.trim().slice(0, 1) : "?";
+  button.querySelector("[data-card-name]").textContent = hasPlayer ? player.displayName : "未选择";
+  const label = hasPlayer
+    ? `${sideLabel}第 ${slot} 张牌，当前选手 ${player.displayName}，费用 ${formatNumber(player.defaultCost)}，点击替换`
+    : `${sideLabel}第 ${slot} 张牌，选择选手`;
+  button.setAttribute("aria-label", label);
+}
+
+function renderPlayerLibrary() {
+  const container = $("#playerLibraryCards");
+  if (!container || !state.playerPickerInput) return;
+  const currentId = state.playerPickerInput.dataset.playerId || "";
+  const selectedIds = new Set(
+    $$("#bluePlayers .player-name, #redPlayers .player-name")
+      .map((input) => input.dataset.playerId)
+      .filter(Boolean),
+  );
+  const query = $("#playerLibrarySearch").value.trim();
+  const players = activePlayers()
+    .filter((player) => !query || fuzzySearch(player.displayName, query))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN"));
+
+  container.innerHTML = players.length
+    ? players.map((player) => {
+      const occupied = selectedIds.has(player.id) && player.id !== currentId;
+      const current = player.id === currentId;
+      return `
+        <button class="library-player-card${current ? " current" : ""}" type="button"
+          data-library-player="${escapeHtml(player.id)}"${occupied ? " disabled" : ""}
+          aria-label="${escapeHtml(player.displayName)}，费用 ${formatNumber(player.defaultCost)}${occupied ? "，已在本局阵容中" : ""}">
+          <span class="library-card-slot">${current ? "当前" : occupied ? "已上场" : "选手"}</span>
+          <span class="library-cost-badge"><span class="cost-gem" aria-hidden="true"></span><span>${formatNumber(player.defaultCost)}</span></span>
+          <span class="library-player-initial">${escapeHtml(player.displayName.trim().slice(0, 1))}</span>
+          <strong>${escapeHtml(player.displayName)}</strong>
+        </button>`;
+    }).join("")
+    : `<div class="player-library-empty">没有匹配的可用选手</div>`;
+}
+
+function openPlayerLibrary(row) {
+  const input = row?.querySelector(".player-name");
+  if (!input) return;
+  state.playerPickerInput = input;
+  const sideLabel = input.dataset.side === "red" ? "红方" : "蓝方";
+  const slot = Number(input.dataset.slot || 0) + 1;
+  $("#playerLibrarySlot").textContent = `${sideLabel} · 第 ${slot} 张选手牌`;
+  $("#playerLibrarySearch").value = "";
+  renderPlayerLibrary();
+  $("#playerLibraryDialog").showModal();
+  requestAnimationFrame(() => $("#playerLibrarySearch").focus());
+}
+
+function choosePlayerFromLibrary(playerId) {
+  const input = state.playerPickerInput;
+  const player = playerById(playerId);
+  if (!input || !player?.active) return;
+  const duplicate = $$("#bluePlayers .player-name, #redPlayers .player-name")
+    .some((item) => item !== input && item.dataset.playerId === player.id);
+  if (duplicate) {
+    toast(`${player.displayName} 已经在本局阵容中。`);
+    return;
+  }
+  input.value = player.displayName;
+  input.dataset.playerId = player.id;
+  const row = input.closest(".player-row");
+  row.querySelector(".cost-input").value = formatNumber(player.defaultCost);
+  renderRosterCard(row, player);
+  updateCostTotals();
+  saveLocalSetup();
+  $("#rollError").textContent = "";
+  $("#playerLibraryDialog").close();
+}
+
+function clearPlayerCard() {
+  const input = state.playerPickerInput;
+  if (!input) return;
+  input.value = "";
+  input.dataset.playerId = "";
+  const row = input.closest(".player-row");
+  row.querySelector(".cost-input").value = "1";
+  renderRosterCard(row);
+  updateCostTotals();
+  saveLocalSetup();
+  $("#playerLibraryDialog").close();
 }
 
 function hidePlayerSuggestions(input) {
@@ -265,6 +371,7 @@ function selectPlayerSuggestion(input, playerId) {
   input.setCustomValidity("");
   const costInput = input.closest(".player-row")?.querySelector(".cost-input");
   if (costInput) costInput.value = formatNumber(player.defaultCost);
+  if (input.closest(".roster-card-row")) renderRosterCard(input.closest(".roster-card-row"), player);
   hidePlayerSuggestions(input);
   updateCostTotals();
   saveLocalSetup();
@@ -316,6 +423,11 @@ function setLineup(side, players) {
     input.value = player.name;
     input.dataset.playerId = player.id;
     rows[index].querySelector(".cost-input").value = formatNumber(player.cost);
+    renderRosterCard(rows[index], playerById(player.id) || {
+      id: player.id,
+      displayName: player.name,
+      defaultCost: player.cost,
+    });
   });
   updateCostTotals();
   saveLocalSetup();
@@ -328,6 +440,18 @@ function updateCostTotals() {
     const total = lineup(side).reduce((sum, player) => sum + (Number.isFinite(player.cost) ? player.cost : 0), 0);
     el.textContent = `费用 ${formatNumber(total)}`;
   }
+}
+
+function syncRosterCostsFromLibrary() {
+  $$("#bluePlayers .player-name, #redPlayers .player-name").forEach((input) => {
+    const player = playerById(input.dataset.playerId || "");
+    if (!player) return;
+    input.value = player.displayName;
+    input.closest(".player-row").querySelector(".cost-input").value = formatNumber(player.defaultCost);
+    renderRosterCard(input.closest(".player-row"), player);
+  });
+  updateCostTotals();
+  saveLocalSetup();
 }
 
 function saveLocalSetup() {
@@ -365,7 +489,8 @@ function restoreLocalSetup() {
         const input = rows[index].querySelector(".player-name");
         input.value = matched.displayName;
         input.dataset.playerId = matched.id;
-        rows[index].querySelector(".cost-input").value = Number.isFinite(entry.cost) ? entry.cost : matched.defaultCost;
+        rows[index].querySelector(".cost-input").value = formatNumber(matched.defaultCost);
+        renderRosterCard(rows[index], matched);
       });
     }
     $("#uniqueHeroes").checked = Boolean(saved.unique);
@@ -545,6 +670,27 @@ function balancePlayers() {
   toast(`分队完成：双方费用差 ${formatNumber(best)}`);
 }
 
+function fillTestPlayers() {
+  const available = shuffle(activePlayers());
+  if (available.length < 10) {
+    const message = `测试填充需要至少 10 名可用选手，当前只有 ${available.length} 名。`;
+    $("#rollError").textContent = message;
+    toast(message);
+    return;
+  }
+
+  const selected = available.slice(0, 10).map((player) => ({
+    id: player.id,
+    name: player.displayName,
+    cost: player.defaultCost,
+  }));
+  setLineup("blue", selected.slice(0, 5));
+  setLineup("red", selected.slice(5));
+  $$(".player-name").forEach((input) => hidePlayerSuggestions(input));
+  $("#rollError").textContent = "";
+  toast("已随机填充 10 名测试选手。");
+}
+
 function assignTeam(players, team) {
   const shuffled = shuffle(players);
   return LANES.map(([lane, laneLabel, abbreviation], index) => ({
@@ -708,6 +854,7 @@ function resetSetup() {
   $$(".player-name").forEach((input) => {
     input.value = "";
     input.dataset.playerId = "";
+    if (input.closest(".roster-card-row")) renderRosterCard(input.closest(".roster-card-row"));
   });
   $$(".cost-input").forEach((input) => { input.value = "1"; });
   $("#blueName").value = "蓝方";
@@ -1649,6 +1796,7 @@ function renderHeroStats() {
 function renderAdmin() {
   if (!state.member) return;
   const admin = isAdmin();
+  $("#playerForm").classList.toggle("hidden", !admin);
   const playerQuery = ($("#adminPlayerSearch")?.value || "").trim();
   const players = playerQuery
     ? state.players.filter(p => fuzzySearch(p.displayName, playerQuery))
@@ -1673,6 +1821,7 @@ function renderAdmin() {
 
 async function addPlayer(event) {
   event.preventDefault();
+  if (!isAdmin()) return toast("只有管理员可以维护选手库。");
   const name = $("#playerName").value.trim();
   const normalizedName = normalizeName(name);
   const defaultCost = Number($("#playerCost").value);
@@ -1827,6 +1976,8 @@ async function refreshPlayers() {
   }
   state.players = (data || []).map(mapPlayer);
   restoreLocalSetup();
+  syncRosterCostsFromLibrary();
+  if ($("#playerLibraryDialog").open) renderPlayerLibrary();
   renderAllSharedData();
 }
 
@@ -2113,6 +2264,7 @@ function bindEvents() {
   });
   $$(".nav-btn").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#rollBtn").addEventListener("click", roll);
+  $("#testFillBtn").addEventListener("click", fillTestPlayers);
   $("#balanceBtn").addEventListener("click", balancePlayers);
   $("#revealBtn").addEventListener("click", () => ($("#sequentialReveal").checked ? revealNext() : revealAll()));
   $("#backBtn").addEventListener("click", backToSetup);
@@ -2124,6 +2276,15 @@ function bindEvents() {
   $("#editMatchForm").addEventListener("submit", saveMatchEdit);
   $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
   $("#manualCollectBtn").addEventListener("click", fetchRecentGames);
+  $("#playerLibrarySearch").addEventListener("input", renderPlayerLibrary);
+  $("#clearPlayerCardBtn").addEventListener("click", clearPlayerCard);
+  $("#playerLibraryCards").addEventListener("click", (event) => {
+    const card = event.target.closest("[data-library-player]");
+    if (card && !card.disabled) choosePlayerFromLibrary(card.dataset.libraryPlayer);
+  });
+  $("#playerLibraryDialog").addEventListener("close", () => {
+    state.playerPickerInput = null;
+  });
   $$("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog").close());
   });
@@ -2131,6 +2292,10 @@ function bindEvents() {
   $("#results").addEventListener("click", (event) => {
     const button = event.target.closest("[data-reroll]");
     if (button) rerollHero(Number(button.dataset.reroll));
+  });
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest("[data-open-player-library]");
+    if (trigger) openPlayerLibrary(trigger.closest(".player-row"));
   });
   document.addEventListener("input", (event) => {
     if (event.target.matches(".player-name")) {

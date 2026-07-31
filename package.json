@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "collector": "node collector/index.mjs",
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "collector": "go -C collector-go run .",
     "test": "node tests/run-tests.mjs",
     "validate": "node scripts/validate-site.mjs",
-    "check": "npm run validate && npm test"
+    "check": "pnpm validate && pnpm test && pnpm build"
   },
   "version": "1.0.0",
   "description": "基于 GitHub Pages、Supabase Auth 和 PostgreSQL 的英雄联盟内部 PVP\r 抽签与多人共享战绩工具。",
@@ -24,5 +27,19 @@
   "bugs": {
     "url": "https://github.com/hyicode/lgg/issues"
   },
-  "homepage": "https://github.com/hyicode/lgg#readme"
+  "homepage": "https://github.com/hyicode/lgg#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "pinyin-pro": "^3.28.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.4"
+  }
 }

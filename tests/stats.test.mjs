@@ -7,11 +7,10 @@ function match(id, playedAt, winner, bluePlayer, redPlayer, blueChampion, redCha
     id,
     playedAt: new Date(playedAt),
     winner,
-    lineup: [
+    participants: [
       { team: "blue", playerId: bluePlayer, playerName: bluePlayer, lane: "top", laneLabel: "上单", champion: { slug: blueChampion, name: blueChampion } },
       { team: "red", playerId: redPlayer, playerName: redPlayer, lane: "top", laneLabel: "上单", champion: { slug: redChampion, name: redChampion } },
     ],
-    bans: [{ slug: "annie", name: "安妮" }],
   };
 }
 
@@ -25,7 +24,6 @@ test("计算选手胜负、连胜与英雄统计", () => {
   const playerA = result.players.find((player) => player.playerId === "A");
   const playerB = result.players.find((player) => player.playerId === "B");
   const garen = result.champions.find((champion) => champion.slug === "garen");
-  const annie = result.champions.find((champion) => champion.slug === "annie");
 
   assert.equal(playerA.games, 3);
   assert.equal(playerA.wins, 2);
@@ -34,8 +32,7 @@ test("计算选手胜负、连胜与英雄统计", () => {
   assert.equal(playerB.currentStreak, 1);
   assert.equal(garen.picks, 3);
   assert.equal(garen.wins, 2);
-  assert.equal(annie.bans, 3);
-  assert.equal(annie.matchesPresent, 3);
+  assert.equal(garen.matchesPresent, 3);
 });
 
 test("按自定义日期范围筛选正式比赛", () => {

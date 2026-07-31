@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 
 const files = [
   "index.html",
+  "src/main.tsx",
+  "src/App.tsx",
+  "vite.config.ts",
   "assets/styles.css",
   "assets/js/app.js",
   "assets/js/stats-core.js",
@@ -15,15 +18,19 @@ for (const file of files) {
   if (!content.trim()) throw new Error(`${file} is empty`);
 }
 
-const html = await readFile("index.html", "utf8");
-const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+const appMarkup = await readFile("src/App.tsx", "utf8");
+const ids = [...appMarkup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+ids.push("blueName", "bluePlayers", "redName", "redPlayers");
+for (const prefix of ["history", "rank", "adminMatch"]) {
+  ids.push(`${prefix}Range`, `${prefix}From`, `${prefix}To`);
+}
 const duplicates = ids.filter((id, index) => ids.indexOf(id) !== index);
 if (duplicates.length) throw new Error(`Duplicate HTML ids: ${[...new Set(duplicates)].join(", ")}`);
 
 const app = await readFile("assets/js/app.js", "utf8");
 for (const match of app.matchAll(/\$\("([#.][^"]+)"\)/g)) {
   const selector = match[1];
-  if (selector.startsWith("#") && !ids.includes(selector.slice(1))) {
+  if (/^#[A-Za-z][\w-]*$/.test(selector) && !ids.includes(selector.slice(1))) {
     throw new Error(`Missing HTML element for ${selector}`);
   }
 }
@@ -35,4 +42,4 @@ for (const lane of ["top", "jungle", "middle", "bottom", "support"]) {
   }
 }
 
-console.log(`Validated ${files.length} site files, ${ids.length} HTML ids, and five OPGG pools.`);
+console.log(`Validated ${files.length} React/Vite files, ${ids.length} UI ids, and five OPGG pools.`);
