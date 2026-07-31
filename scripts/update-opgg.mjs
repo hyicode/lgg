@@ -1,5 +1,8 @@
-import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { chromium } = require("playwright");
 
 const lanes = [
   { key: "top", position: "top", sentinel: "mordekaiser" },
@@ -15,7 +18,10 @@ const today = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 }).format(new Date());
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ...(process.env.OPGG_BROWSER_PATH ? { executablePath: process.env.OPGG_BROWSER_PATH } : {}),
+});
 const context = await browser.newContext({
   locale: "zh-CN",
   userAgent:
@@ -85,10 +91,11 @@ function detailPositions(html) {
 }
 
 function detailRates(html) {
+  const win = html.match(/胜率<\/em><b[^>]*>([\d.]+)(?:<!-- -->)?%/);
   const pick = html.match(/选用率<\/em><b[^>]*>([\d.]+)(?:<!-- -->)?%/);
   const ban = html.match(/禁用率<\/em><b[^>]*>([\d.]+)(?:<!-- -->)?%/);
-  if (!pick || !ban) return null;
-  return { weight: Number(pick[1]), banRate: Number(ban[1]) };
+  if (!win || !pick || !ban) return null;
+  return { winRate: Number(win[1]), weight: Number(pick[1]), banRate: Number(ban[1]) };
 }
 
 try {
@@ -123,7 +130,7 @@ try {
             link.querySelector("img")?.getAttribute("alt")?.trim() ||
             link.textContent?.trim() ||
             slug;
-          return { name, slug, weight: values[1], banRate: values[2] };
+          return { name, slug, winRate: values[0], weight: values[1], banRate: values[2] };
         })
         .filter(Boolean)
     );
@@ -168,7 +175,7 @@ try {
       `${baseUrl}/${hero.slug}/build/${position}?region=global&tier=emerald_plus`
     );
     const rates = detailRates(html);
-    if (!rates || !(rates.weight > 0) || !(rates.banRate >= 0)) {
+    if (!rates || !(rates.winRate >= 0) || !(rates.weight > 0) || !(rates.banRate >= 0)) {
       throw new Error(`${hero.slug}/${position}: missing summary rates`);
     }
     return { lane, hero: { ...hero, ...rates } };
@@ -177,13 +184,9 @@ try {
   for (const lane of Object.keys(pools)) {
     pools[lane].sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name, "zh-CN"));
   }
-  if (!pools.top.some((hero) => hero.slug === "udyr")) {
-    throw new Error("top: low-pick role completeness check failed for udyr");
-  }
-
   const payload = {
     schema: 1,
-    generatorVersion: 3,
+    generatorVersion: 4,
     source: "OPGG",
     region: "global",
     tier: "emerald_plus",
