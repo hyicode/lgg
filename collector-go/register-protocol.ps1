@@ -1,5 +1,5 @@
 # LGG Collector 注册表注册脚本
-# 以管理员身份运行此脚本以注册 lggcollector:// 协议
+# 使用当前用户注册 lggcollector:// 协议，无需管理员权限
 
 $installDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exePath = Join-Path $installDir "lgg-collector.exe"
@@ -20,4 +20,4 @@ $command = "`"$launcherPath`" `"%1`""
 Set-Item -Path "$protocolRoot\shell\open\command" -Value $command
 
 Write-Host "lggcollector:// 协议注册成功。" -ForegroundColor Green
-Write-Host "现在网页中的"启动采集器"按钮可以正常使用了。"
+Write-Host "现在网页中的“采集数据”按钮可以正常使用了。"

@@ -40,6 +40,9 @@ for (const lane of ["top", "jungle", "middle", "bottom", "support"]) {
   if (!Array.isArray(data.pools?.[lane]) || data.pools[lane].length < 10) {
     throw new Error(`Invalid OPGG pool: ${lane}`);
   }
+  if (data.pools[lane].some((hero) => !Number.isFinite(hero.winRate) || hero.winRate < 0 || hero.winRate > 100)) {
+    throw new Error(`Invalid OPGG win rate: ${lane}`);
+  }
 }
 
 console.log(`Validated ${files.length} React/Vite files, ${ids.length} UI ids, and five OPGG pools.`);

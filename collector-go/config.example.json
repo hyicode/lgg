@@ -1,6 +1,8 @@
 {
   "port": 32145,
   "allowedOrigins": [
-    "https://hyicode.github.io"
+    "https://hyicode.github.io",
+    "http://localhost:2525",
+    "http://127.0.0.1:2525"
   ]
 }

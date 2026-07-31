@@ -206,17 +206,25 @@ to authenticated
 using (public.is_active_member());
 
 drop policy if exists "players managed by admins" on public.players;
-create policy "players managed by admins"
-on public.players for all
+drop policy if exists "players inserted by admins" on public.players;
+create policy "players inserted by admins"
+on public.players for insert
+to authenticated
+with check (public.is_admin());
+
+drop policy if exists "players inserted by members" on public.players;
+drop policy if exists "players updated by admins" on public.players;
+create policy "players updated by admins"
+on public.players for update
 to authenticated
 using (public.is_admin())
 with check (public.is_admin());
 
-drop policy if exists "players inserted by members" on public.players;
-create policy "players inserted by members"
-on public.players for insert
+drop policy if exists "players deleted by admins" on public.players;
+create policy "players deleted by admins"
+on public.players for delete
 to authenticated
-with check (public.is_active_member());
+using (public.is_admin());
 
 drop policy if exists "matches read by members" on public.matches;
 create policy "matches read by members"
@@ -265,11 +273,6 @@ to authenticated
 using (public.is_active_member());
 
 drop policy if exists "player_stats managed by members" on public.player_stats;
-create policy "player_stats managed by members"
-on public.player_stats for all
-to authenticated
-using (public.is_active_member())
-with check (public.is_active_member());
 
 -- 从所有 matches 的 participants JSONB 中重算全部选手战绩
 create or replace function public.recalc_player_stats()
@@ -278,34 +281,104 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
-declare
-  rec record;
 begin
   delete from public.player_stats where true;
 
-  for rec in
-    select
-      (p ->> 'playerId')::uuid as pid,
-      count(*) as games,
-      count(*) filter (where p ->> 'team' = m.winner) as wins,
-      count(*) filter (where p ->> 'team' <> m.winner) as losses,
-      coalesce(sum(((p -> 'stats' ->> 'kills')::int)), 0) as kills,
-      coalesce(sum(((p -> 'stats' ->> 'deaths')::int)), 0) as deaths,
-      coalesce(sum(((p -> 'stats' ->> 'assists')::int)), 0) as assists
-    from public.matches m,
-         jsonb_array_elements(m.participants) p
-    where p ->> 'playerId' is not null
-    group by pid
-  loop
-    insert into public.player_stats (player_id, games, wins, losses, kills, deaths, assists, updated_at)
-    values (rec.pid, rec.games, rec.wins, rec.losses, rec.kills, rec.deaths, rec.assists, now())
-    on conflict (player_id) do update set
-      games = excluded.games, wins = excluded.wins, losses = excluded.losses,
-      kills = excluded.kills, deaths = excluded.deaths, assists = excluded.assists,
-      updated_at = now();
-  end loop;
+  insert into public.player_stats (player_id, games, wins, losses, kills, deaths, assists, updated_at)
+  select
+    player.id,
+    count(*)::int,
+    count(*) filter (where participant.item ->> 'team' = m.winner)::int,
+    count(*) filter (where participant.item ->> 'team' <> m.winner)::int,
+    coalesce(sum(
+      case when coalesce(participant.item -> 'stats' ->> 'kills', '') ~ '^-?[0-9]+$'
+        then (participant.item -> 'stats' ->> 'kills')::int else 0 end
+    ), 0)::int,
+    coalesce(sum(
+      case when coalesce(participant.item -> 'stats' ->> 'deaths', '') ~ '^-?[0-9]+$'
+        then (participant.item -> 'stats' ->> 'deaths')::int else 0 end
+    ), 0)::int,
+    coalesce(sum(
+      case when coalesce(participant.item -> 'stats' ->> 'assists', '') ~ '^-?[0-9]+$'
+        then (participant.item -> 'stats' ->> 'assists')::int else 0 end
+    ), 0)::int,
+    now()
+  from public.matches as m
+  cross join lateral jsonb_array_elements(
+    case when jsonb_typeof(m.participants) = 'array' then m.participants else '[]'::jsonb end
+  ) as participant(item)
+  join public.players as player
+    on lower(participant.item ->> 'playerId') = player.id::text
+  group by player.id;
 end;
 $$;
+
+-- 管理员手动校对：以实际参赛选手 playerId 为归属重算。
+-- riotAccountId/accountName 只用于识别借号，不参与战绩归属。
+create or replace function public.admin_reconcile_player_stats()
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  result jsonb;
+begin
+  if not public.is_admin() then
+    raise exception 'admin access required';
+  end if;
+
+  perform public.recalc_player_stats();
+
+  with entries as (
+    select
+      m.id as match_id,
+      participant.item,
+      nullif(trim(participant.item ->> 'playerId'), '') as player_id,
+      coalesce(
+        nullif(trim(participant.item ->> 'riotAccountId'), ''),
+        nullif(lower(trim(participant.item ->> 'accountName')), '')
+      ) as account_key
+    from public.matches as m
+    cross join lateral jsonb_array_elements(
+      case when jsonb_typeof(m.participants) = 'array' then m.participants else '[]'::jsonb end
+    ) as participant(item)
+  ),
+  valid_entries as (
+    select entries.*
+    from entries
+    join public.players as player on lower(entries.player_id) = player.id::text
+  ),
+  duplicate_assignments as (
+    select match_id, player_id
+    from valid_entries
+    group by match_id, player_id
+    having count(*) > 1
+  ),
+  borrowed_accounts as (
+    select account_key
+    from valid_entries
+    where account_key is not null
+    group by account_key
+    having count(distinct player_id) > 1
+  )
+  select jsonb_build_object(
+    'match_count', (select count(*) from public.matches),
+    'participant_count', (select count(*) from entries),
+    'player_count', (select count(*) from public.player_stats),
+    'invalid_participants', (select count(*) from entries) - (select count(*) from valid_entries),
+    'duplicate_assignments', (select count(*) from duplicate_assignments),
+    'borrowed_accounts', (select count(*) from borrowed_accounts)
+  )
+  into result;
+
+  return result;
+end;
+$$;
+
+revoke all on function public.recalc_player_stats() from public, anon, authenticated;
+revoke all on function public.admin_reconcile_player_stats() from public, anon;
+grant execute on function public.admin_reconcile_player_stats() to authenticated;
 
 -- 触发器：matches 变更时自动重算战绩
 create or replace function public.on_match_changed()
@@ -349,6 +422,8 @@ with check (exists (select 1 from public.profiles where id = auth.uid() and acti
 
 revoke all on public.profiles, public.players, public.matches, public.riot_accounts, public.player_stats from anon;
 grant select on public.profiles to authenticated;
+-- authenticated 是 Supabase 的共享登录角色；下列 DML grant 仍会被上方 RLS
+-- 按 profiles.role 约束。公共账号只能 insert matches/riot_accounts，不能 update/delete。
 grant select, insert, update, delete on public.players to authenticated;
 grant select, insert, update, delete on public.matches to authenticated;
 grant select, insert on public.riot_accounts to authenticated;

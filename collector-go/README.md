@@ -1,31 +1,26 @@
-# LGG Collector (Go)
+# LGG Collector Proxy (Go)
 
-纯 Go 实现的英雄联盟对局数据采集桥，编译为单个 exe，无需安装 Node.js。
+LGG 只保留这一套 Go 本机代理。它编译为单个 Windows EXE，无需 Node.js 或其他运行时。
 
-## 与 Node.js 版的区别
+## 职责边界
 
-| 特性 | Node.js 版 | Go 版 |
-|------|-----------|-------|
-| 运行时依赖 | 需要 Node.js (~70MB) | 无 (单文件 exe) |
-| 文件大小 | ~50KB 脚本 + Node.js | ~7MB 单文件 |
-| 安装方式 | 下载脚本安装 | 直接复制 exe |
-| 启动速度 | 较慢 | 即时 |
+Go 程序只做三件事：
 
-## 绿色版使用
+1. 发现本机 `LeagueClientUx.exe` 的 LCU 端口和临时令牌；
+2. 将网页请求透明转发到 `/proxy/lcu/*` 或 `/proxy/live/*`；
+3. 限制允许访问代理的网页来源，并在按需模式下自动退出。
 
-1. 下载 `lgg-collector.exe`
-2. 放到任意目录（如桌面）
-3. 双击运行，或在网页中通过 `lggcollector://` 协议唤起
-4. 如需自定义端口/域名，在同目录创建 `config.json`
+它不会选择对局、解析玩家字段、判断位置、保存数据或向远端提交数据。这些业务逻辑全部在浏览器端完成。
 
-```json
-{
-  "port": 32145,
-  "allowedOrigins": [
-    "https://hyicode.github.io"
-  ]
-}
-```
+## 网页安装
+
+网页下载 `LGG-Collector-Setup.cmd` 后，会安装：
+
+- `%LOCALAPPDATA%\LGGCollector\lgg-collector.exe`
+- `lggcollector://` 协议启动器
+- 手动启动脚本
+
+安装器和网页分发文件位于 `public/collector/`。
 
 ## 构建
 
@@ -34,15 +29,26 @@ cd collector-go
 build.cmd
 ```
 
-或者手动：
+发布网页安装资源及绿色版压缩包：
 
-```bash
-go build -ldflags="-s -w" -o lgg-collector.exe .
+```cmd
+release.cmd
 ```
 
-## 命令行参数
+## 接口
+
+| 接口 | 说明 |
+|------|------|
+| `GET /health` | 返回 Go 代理版本和运行模式 |
+| `GET /discover` | 检查 LCU 是否可连接 |
+| `/proxy/lcu/*` | 透明转发到 LCU |
+| `/proxy/live/*` | 透明转发到 Live Client Data API |
+
+`/collect` 和 `/recent-games` 不再存在。
+
+## 参数
 
 | 参数 | 说明 |
 |------|------|
-| `--on-demand` | 按需模式：空闲 2 分钟后自动退出 |
+| `--on-demand` | 空闲 2 分钟后自动退出 |
 | `--version` | 显示版本信息 |

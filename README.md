@@ -20,15 +20,15 @@
 - `assets/js/supabase-config.js`：浏览器可用的 Supabase 项目地址和发布密钥。
 - `supabase/schema.sql`：表结构、触发器、RLS 权限和 Realtime 配置。
 - `SUPABASE_SETUP.md`：Supabase 维护与恢复说明。
-- `data/opgg-data.json`：GitHub Actions 每日生成的分路数据。
+- `data/opgg-data.json`：GitHub Actions 每日生成的位置数据。
 - `scripts/update-opgg.mjs`：OPGG 数据抓取器。
-- `collector-go/`：Windows 本机采集桥，让网页在用户确认前读取并预览客户端对局数据。
+- `collector-go/`：唯一保留的 Windows Go 本机代理，只转发 LOL 客户端接口；对局解析和确认由浏览器完成。
 
 ## 对局采集器
 
-先构建并双击 `collector-go/start-collector.cmd` 启动本机桥接服务，再在“记录正式比赛”
-弹窗中点击“采集数据”。网页会展示双方、英雄、KDA、补刀和胜方，用户确认后
-才会提交到 Supabase。详细说明见 `collector-go/README.md`。
+先构建并双击 `collector-go/start-collector.cmd` 启动 Go 本机代理，再在“记录正式比赛”
+弹窗中点击“采集数据”。Go 程序只透明转发 LCU 请求，网页负责选择、解析并展示对局；
+只有用户确认后才会提交到 Supabase。详细说明见 `collector-go/README.md`。
 
 ## 本地开发
 

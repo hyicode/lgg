@@ -15,7 +15,11 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		Port:           32145,
-		AllowedOrigins: []string{"https://hyicode.github.io"},
+		AllowedOrigins: []string{
+			"https://hyicode.github.io",
+			"http://localhost:2525",
+			"http://127.0.0.1:2525",
+		},
 	}
 }
 

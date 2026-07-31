@@ -13,7 +13,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("LGG Collector v1.0.0 (Go)")
+		fmt.Printf("LGG Collector Proxy v%s (Go)\n", proxyVersion)
 		return
 	}
 

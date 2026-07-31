@@ -46,11 +46,11 @@ function AppHeader() {
         <button className="nav-btn active" data-view="rollView">天命</button>
         <button className="nav-btn" data-view="historyView">对局历史</button>
         <button className="nav-btn" data-view="leaderboardView">战绩排行</button>
-        <button className="nav-btn member-only hidden" data-view="adminView">管理</button>
+        <button className="nav-btn admin-only hidden" data-view="adminView">管理</button>
       </nav>
 
       <div className="toolbar">
-        <div><span className="status-dot" /><span id="dataStatus">正在加载分路数据…</span></div>
+        <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>
         <div className="toolbar-actions">
           <button
             className="mini admin-only hidden test-data-toggle"
@@ -95,7 +95,7 @@ function ClashDivider() {
             <input type="checkbox" id="randomTeams" defaultChecked />
             <span><strong>随机分队</strong></span>
           </label>
-          <label className="draw-option" title="随机交换选手所在的固定分路牌">
+          <label className="draw-option" title="随机交换选手所在的固定位置牌">
             <input type="checkbox" id="randomPositions" defaultChecked />
             <span><strong>随机位置</strong></span>
           </label>
@@ -166,6 +166,7 @@ function DateRangeFilters({ prefix }: { prefix: "history" | "rank" | "adminMatch
     <>
       <select id={`${prefix}Range`} defaultValue="all">
         <option value="all">全部时间</option>
+        <option value="7">最近 1 周</option>
         <option value="30">最近 30 天</option>
         <option value="custom">自定义</option>
       </select>
@@ -236,8 +237,12 @@ function AdminView() {
     <section className="view hidden" id="adminView">
       <div className="section-head">
         <div><h2>管理员控制台</h2><p>维护共享选手库并修正正式比赛。</p></div>
-        <button className="ghost admin-only hidden" id="testFillBtn">测试填充阵容</button>
+        <div className="admin-head-actions admin-only hidden">
+          <button className="ghost" id="adminReconcileBtn" type="button">数据校对</button>
+          <button className="ghost" id="testFillBtn" type="button">测试填充阵容</button>
+        </div>
       </div>
+      <div className="admin-reconcile-status hidden" id="adminReconcileStatus" role="status" aria-live="polite" />
       <div className="admin-grid">
         <section className="panel">
           <h3>选手库</h3>
@@ -253,12 +258,36 @@ function AdminView() {
             placeholder="搜索选手…"
             style={{ width: "100%", marginBottom: 10 }}
           />
+          <div className="admin-batch-toolbar admin-only hidden">
+            <label className="admin-batch-select">
+              <input id="adminPlayerSelectAll" type="checkbox" />
+              <span>全选当前结果</span>
+            </label>
+            <span className="admin-batch-count" id="adminPlayerSelectionCount">已选 0 人</span>
+            <div className="admin-batch-actions">
+              <button className="mini" id="clearPlayerSelectionBtn" type="button">清空选择</button>
+              <button className="mini" id="batchEnablePlayersBtn" type="button">批量启用</button>
+              <button className="mini" id="batchDisablePlayersBtn" type="button">批量停用</button>
+              <button className="mini" id="batchPlayerCostBtn" type="button">统一费用</button>
+            </div>
+          </div>
           <div id="adminPlayerList" className="admin-list" />
         </section>
         <section className="panel" id="adminMatchSection">
           <h3>对局管理</h3>
           <div className="filters" style={{ marginBottom: 10 }}>
             <DateRangeFilters prefix="adminMatch" />
+          </div>
+          <div className="admin-batch-toolbar admin-only hidden">
+            <label className="admin-batch-select">
+              <input id="adminMatchSelectAll" type="checkbox" />
+              <span>全选当前结果</span>
+            </label>
+            <span className="admin-batch-count" id="adminMatchSelectionCount">已选 0 场</span>
+            <div className="admin-batch-actions">
+              <button className="mini" id="clearMatchSelectionBtn" type="button">清空选择</button>
+              <button className="mini danger" id="batchDeleteMatchesBtn" type="button">批量删除</button>
+            </div>
           </div>
           <div id="adminMatchList" className="admin-list" />
         </section>
@@ -295,11 +324,45 @@ function CollectorPreview() {
       </div>
       <div className="collector-preview hidden" id="collectorPreview">
         <div className="collector-meta" id="collectorMeta" />
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>队伍</th><th>LGG 选手</th><th>分路</th><th>💬 拖入客户端玩家</th><th>英雄</th><th>K / D / A</th></tr></thead>
-            <tbody id="collectorBody" />
-          </table>
+        <div className="collector-team-layout">
+          <section className="collector-team-panel blue" aria-label="蓝方采集数据">
+            <div className="collector-team-title">
+              <strong><span className="collector-team-mark">蓝</span> 蓝方</strong>
+              <small id="collectorBlueCount">0 / 5 已匹配</small>
+            </div>
+            <div className="table-wrap collector-team-table">
+              <table>
+                <colgroup>
+                  <col className="collector-col-player" />
+                  <col className="collector-col-lane" />
+                  <col className="collector-col-account" />
+                  <col className="collector-col-champion" />
+                  <col className="collector-col-kda" />
+                </colgroup>
+                <thead><tr><th>选手</th><th>位置</th><th>游戏 ID</th><th>英雄</th><th>K / D / A</th></tr></thead>
+                <tbody id="collectorBlueBody" />
+              </table>
+            </div>
+          </section>
+          <section className="collector-team-panel red" aria-label="红方采集数据">
+            <div className="collector-team-title">
+              <strong><span className="collector-team-mark">红</span> 红方</strong>
+              <small id="collectorRedCount">0 / 5 已匹配</small>
+            </div>
+            <div className="table-wrap collector-team-table">
+              <table>
+                <colgroup>
+                  <col className="collector-col-player" />
+                  <col className="collector-col-lane" />
+                  <col className="collector-col-account" />
+                  <col className="collector-col-champion" />
+                  <col className="collector-col-kda" />
+                </colgroup>
+                <thead><tr><th>选手</th><th>位置</th><th>游戏 ID</th><th>英雄</th><th>K / D / A</th></tr></thead>
+                <tbody id="collectorRedBody" />
+              </table>
+            </div>
+          </section>
         </div>
         <div className="unmatched-pool hidden" id="unmatchedPool">
           <div className="unmatched-head">未匹配的客户端玩家（拖到上方对应行）</div>
@@ -312,7 +375,7 @@ function CollectorPreview() {
 
 function RecordDialog() {
   return (
-    <dialog id="recordDialog" className="wide-dialog">
+    <dialog id="recordDialog" className="wide-dialog record-dialog">
       <form id="recordForm">
         <div className="dialog-head"><h2>记录正式比赛</h2><DialogCloseButton /></div>
         <div className="dialog-grid">
@@ -382,23 +445,44 @@ function HeroStatsDialog() {
   return (
     <dialog id="heroStatsDialog" className="wide-dialog">
       <div className="dialog-head">
-        <h2>OPGG 英雄分路数据</h2>
+        <h2>OPGG 英雄位置数据</h2>
         <button className="icon-btn" id="heroStatsClose" aria-label="关闭">×</button>
       </div>
       <div className="rank-tools">
         <input className="search-input" id="heroSearch" type="search" placeholder="支持中文、拼音或首字母…" />
-        <select id="heroLane" defaultValue="all">
-          <option value="all">全部分路</option>
-          <option value="top">上单</option>
-          <option value="jungle">打野</option>
-          <option value="middle">中路</option>
-          <option value="bottom">下路</option>
-          <option value="support">辅助</option>
-        </select>
+        <div className="hero-lane-tabs" role="tablist" aria-label="位置筛选">
+          <button className="hero-lane-tab active" type="button" role="tab" data-hero-lane="all" aria-selected="true">全部</button>
+          <button className="hero-lane-tab" type="button" role="tab" data-hero-lane="top" aria-selected="false">上单</button>
+          <button className="hero-lane-tab" type="button" role="tab" data-hero-lane="jungle" aria-selected="false">打野</button>
+          <button className="hero-lane-tab" type="button" role="tab" data-hero-lane="middle" aria-selected="false">中路</button>
+          <button className="hero-lane-tab" type="button" role="tab" data-hero-lane="bottom" aria-selected="false">下路</button>
+          <button className="hero-lane-tab" type="button" role="tab" data-hero-lane="support" aria-selected="false">辅助</button>
+        </div>
+        <input id="heroLane" type="hidden" defaultValue="all" />
       </div>
       <div className="table-wrap hero-table">
         <table>
-          <thead><tr><th>英雄</th><th>分路</th><th>登场率</th><th>禁用率</th></tr></thead>
+          <thead>
+            <tr>
+              <th>英雄</th>
+              <th>位置登场率</th>
+              <th>
+                <button className="hero-sort-button active" type="button" data-hero-sort="weight" aria-pressed="true">
+                  累计登场率 <span aria-hidden="true">↓</span>
+                </button>
+              </th>
+              <th>
+                <button className="hero-sort-button" type="button" data-hero-sort="winRate" aria-pressed="false">
+                  胜率 <span aria-hidden="true">↕</span>
+                </button>
+              </th>
+              <th>
+                <button className="hero-sort-button" type="button" data-hero-sort="banRate" aria-pressed="false">
+                  禁用率 <span aria-hidden="true">↕</span>
+                </button>
+              </th>
+            </tr>
+          </thead>
           <tbody id="heroStatsBody" />
         </table>
       </div>

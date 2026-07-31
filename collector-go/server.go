@@ -1,18 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
 
-// CollectorServer HTTP 采集服务器
+const proxyVersion = "3.0.0"
+
+// CollectorServer 只负责发现本机客户端并透明转发请求。
+// 对局选择、字段解析和业务校验全部由网页完成。
 type CollectorServer struct {
 	config       Config
 	server       *http.Server
@@ -23,7 +27,14 @@ type CollectorServer struct {
 	clientMu     sync.Mutex
 }
 
-var localOrigin = regexp.MustCompile(`^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$`)
+var proxyHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // LCU 使用本机自签名证书。
+		MaxIdleConns:    8,
+		IdleConnTimeout: 90 * time.Second,
+	},
+	Timeout: 20 * time.Second,
+}
 
 func isAllowedOrigin(origin string, config Config) bool {
 	if origin == "" {
@@ -34,7 +45,7 @@ func isAllowedOrigin(origin string, config Config) bool {
 			return true
 		}
 	}
-	return localOrigin.MatchString(origin)
+	return false
 }
 
 func setCORSHeaders(w http.ResponseWriter, origin string) {
@@ -42,7 +53,7 @@ func setCORSHeaders(w http.ResponseWriter, origin string) {
 	w.Header().Set("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Private-Network", "true")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
 	w.Header().Set("Cache-Control", "no-store")
 }
 
@@ -50,10 +61,9 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}, origin strin
 	setCORSHeaders(w, origin)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
-// NewCollectorServer 创建采集服务器
 func NewCollectorServer(cfg Config, onDemand bool) *CollectorServer {
 	cs := &CollectorServer{
 		config:      cfg,
@@ -66,109 +76,135 @@ func NewCollectorServer(cfg Config, onDemand bool) *CollectorServer {
 	mux.HandleFunc("/proxy/live/", cs.handleLiveProxy)
 	mux.HandleFunc("/", cs.handleRequest)
 	cs.server = &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", cfg.Port),
-		Handler: mux,
+		Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
-
 	return cs
 }
 
-func (cs *CollectorServer) handleRequest(w http.ResponseWriter, r *http.Request) {
+func (cs *CollectorServer) touch() {
 	cs.mu.Lock()
 	cs.lastRequest = time.Now()
 	cs.mu.Unlock()
+}
 
+func (cs *CollectorServer) allowRequest(w http.ResponseWriter, r *http.Request) bool {
+	cs.touch()
 	origin := r.Header.Get("Origin")
 	if !isAllowedOrigin(origin, cs.config) {
-		writeJSON(w, 403, ErrorResponse{Error: "该网页来源不允许访问采集桥。"}, "")
-		return
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "该网页来源不允许访问采集代理。"}, "")
+		return false
 	}
-
-	// CORS 预检
-	if r.Method == "OPTIONS" {
+	if r.Method == http.MethodOptions {
 		setCORSHeaders(w, origin)
-		w.WriteHeader(204)
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	return true
+}
+
+func allowReadOnlyProxy(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+	writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "采集代理仅允许只读请求。"}, r.Header.Get("Origin"))
+	return false
+}
+
+func isAllowedLCUPath(path string) bool {
+	switch path {
+	case "/proxy/lcu/lol-match-history/v1/products/lol/current-summoner/matches",
+		"/proxy/lcu/lol-game-data/assets/v1/champion-summary.json":
+		return true
+	}
+	const gamePrefix = "/proxy/lcu/lol-match-history/v1/games/"
+	if !strings.HasPrefix(path, gamePrefix) {
+		return false
+	}
+	gameID := strings.TrimPrefix(path, gamePrefix)
+	if gameID == "" || strings.ContainsAny(gameID, "/\\") {
+		return false
+	}
+	for _, char := range gameID {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllowedLivePath(path string) bool {
+	const livePrefix = "/proxy/live/liveclientdata/"
+	if !strings.HasPrefix(path, livePrefix) {
+		return false
+	}
+	endpoint := strings.TrimPrefix(path, livePrefix)
+	switch endpoint {
+	case "allgamedata", "activeplayer", "activeplayername", "playerlist", "playeritems", "eventdata", "gamestats", "scores":
+		return true
+	default:
+		return false
+	}
+}
+
+func (cs *CollectorServer) handleRequest(w http.ResponseWriter, r *http.Request) {
+	if !cs.allowRequest(w, r) {
 		return
 	}
+	origin := r.Header.Get("Origin")
 
-	// 健康检查
-	if r.Method == "GET" && r.URL.Path == "/health" {
-		writeJSON(w, 200, ErrorResponse{OK: true, Service: "LGG Collector Bridge"}, origin)
-		return
-	}
-
-	// 客户端发现状态
-	if r.Method == "GET" && r.URL.Path == "/discover" {
-		client, err := cs.getCachedClient()
-		if err != nil {
-			writeJSON(w, 200, map[string]interface{}{
-				"ok":        false,
-				"lcuReady":  false,
-				"liveReady": false,
-				"error":     err.Error(),
-			}, origin)
-			return
-		}
-		liveReady := false
-		if _, err := getLiveGameData(); err == nil {
-			liveReady = true
-		}
-		writeJSON(w, 200, map[string]interface{}{
-			"ok":        true,
-			"lcuReady":  true,
-			"liveReady": liveReady,
-			"lcuPort":   strings.TrimPrefix(strings.TrimPrefix(client.BaseURL, "https://127.0.0.1:"), "http://127.0.0.1:"),
-			"version":   "2.0.0",
+	if r.Method == http.MethodGet && r.URL.Path == "/health" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"service": "LGG Collector Bridge",
+			"runtime": "go",
+			"mode":    "proxy",
+			"version": proxyVersion,
 		}, origin)
 		return
 	}
 
-	// 采集对局数据
-	if r.Method == "GET" && r.URL.Path == "/collect" {
-		match, err := collectFromLeagueClient()
+	if r.Method == http.MethodGet && r.URL.Path == "/discover" {
+		client, err := cs.getCachedClient()
 		if err != nil {
-			writeJSON(w, 503, ErrorResponse{Error: err.Error()}, origin)
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":       false,
+				"lcuReady": false,
+				"runtime":  "go",
+				"mode":     "proxy",
+				"version":  proxyVersion,
+				"error":    err.Error(),
+			}, origin)
 			return
 		}
-		writeJSON(w, 200, match, origin)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":       true,
+			"lcuReady": true,
+			"lcuPort": strings.TrimPrefix(
+				strings.TrimPrefix(client.BaseURL, "https://127.0.0.1:"),
+				"http://127.0.0.1:",
+			),
+			"runtime": "go",
+			"mode":    "proxy",
+			"version": proxyVersion,
+		}, origin)
 		return
 	}
 
-	// 最近对局列表
-	if r.Method == "GET" && r.URL.Path == "/recent-games" {
-		count := 20
-		games, err := collectRecentGames(count)
-		if err != nil {
-			writeJSON(w, 503, ErrorResponse{Error: err.Error()}, origin)
-			return
-		}
-		writeJSON(w, 200, map[string]interface{}{"games": games}, origin)
-		return
-	}
-
-	// 404
-	writeJSON(w, 404, ErrorResponse{Error: "Not found"}, origin)
+	writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "Not found"}, origin)
 }
 
-// ---- 透明代理 ----
-
-// getCachedClient 获取缓存的 LCU 客户端，缓存未命中或过期时重新发现
 func (cs *CollectorServer) getCachedClient() (*LeagueClient, error) {
 	cs.clientMu.Lock()
 	defer cs.clientMu.Unlock()
 
-	// 缓存过期时间 30 分钟（LCU token 会定期轮换）
 	const cacheTTL = 30 * time.Minute
-
-	if cs.cachedClient != nil {
-		// 检查是否过期
-		if time.Since(cs.cachedClient.DiscoveredAt) < cacheTTL {
-			return cs.cachedClient, nil
-		}
-		fmt.Fprintf(os.Stderr, "[代理] 客户端缓存已过期，重新发现...\n")
-		cs.cachedClient = nil
+	if cs.cachedClient != nil && time.Since(cs.cachedClient.DiscoveredAt) < cacheTTL {
+		return cs.cachedClient, nil
 	}
-
+	cs.cachedClient = nil
 	client, err := discoverLeagueClient()
 	if err != nil {
 		return nil, err
@@ -178,183 +214,174 @@ func (cs *CollectorServer) getCachedClient() (*LeagueClient, error) {
 	return cs.cachedClient, nil
 }
 
-// clearCachedClient 清除缓存的 LCU 客户端
 func (cs *CollectorServer) clearCachedClient() {
 	cs.clientMu.Lock()
-	defer cs.clientMu.Unlock()
-	if cs.cachedClient != nil {
-		fmt.Fprintf(os.Stderr, "[代理] 清除缓存客户端\n")
-	}
 	cs.cachedClient = nil
+	cs.clientMu.Unlock()
 }
 
-// proxyRequest 通用代理转发，返回响应状态码
-func (cs *CollectorServer) proxyRequest(w http.ResponseWriter, r *http.Request, targetURL string, authHeader string) int {
-	// 构造目标请求
-	proxyReq, err := http.NewRequest(r.Method, targetURL, r.Body)
-	if err != nil {
-		writeJSON(w, 502, ErrorResponse{Error: fmt.Sprintf("构造代理请求失败: %s", err.Error())}, r.Header.Get("Origin"))
-		return 502
+func shouldSkipHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "host", "connection", "proxy-connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade":
+		return true
+	default:
+		return false
 	}
+}
 
-	// 复制请求头（排除 hop-by-hop）
+func shouldSkipResponseHeader(name string) bool {
+	if shouldSkipHeader(name) {
+		return true
+	}
+	switch strings.ToLower(name) {
+	case "access-control-allow-origin", "access-control-allow-methods", "access-control-allow-headers", "access-control-allow-private-network", "vary", "cache-control":
+		return true
+	default:
+		return false
+	}
+}
+
+func forwardRequest(r *http.Request, targetURL, authorization string, body []byte) (*http.Response, error) {
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
 	for key, values := range r.Header {
-		lower := strings.ToLower(key)
-		if lower == "host" || lower == "connection" || lower == "transfer-encoding" || lower == "te" || lower == "trailer" {
+		if shouldSkipHeader(key) {
 			continue
 		}
-		for _, v := range values {
-			proxyReq.Header.Add(key, v)
+		for _, value := range values {
+			proxyReq.Header.Add(key, value)
 		}
 	}
-
-	// 注入认证头
-	if authHeader != "" {
-		proxyReq.Header.Set("Authorization", authHeader)
+	if authorization != "" {
+		proxyReq.Header.Set("Authorization", authorization)
 	}
-
-	// 发送代理请求
-	client := lcuHTTPClient()
-	resp, err := client.Do(proxyReq)
-	if err != nil {
-		writeJSON(w, 502, ErrorResponse{Error: fmt.Sprintf("代理请求失败: %s", err.Error())}, r.Header.Get("Origin"))
-		return 502
-	}
-	defer resp.Body.Close()
-
-	// 复制响应头
-	origin := r.Header.Get("Origin")
-	setCORSHeaders(w, origin)
-	for key, values := range resp.Header {
-		lower := strings.ToLower(key)
-		if lower == "access-control-allow-origin" || lower == "access-control-allow-methods" ||
-			lower == "access-control-allow-headers" || lower == "access-control-allow-private-network" ||
-			lower == "vary" || lower == "cache-control" {
-			continue
-		}
-		for _, v := range values {
-			w.Header().Add(key, v)
-		}
-	}
-
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-	return resp.StatusCode
+	return proxyHTTPClient.Do(proxyReq)
 }
 
-// handleLCUProxy 代理 LCU API 请求（认证失败自动重试）
-// 用法: GET/POST /proxy/lcu/lol-match-history/v1/games/12345
-func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request) {
-	cs.mu.Lock()
-	cs.lastRequest = time.Now()
-	cs.mu.Unlock()
+func writeProxyResponse(w http.ResponseWriter, response *http.Response, origin string) {
+	setCORSHeaders(w, origin)
+	for key, values := range response.Header {
+		if shouldSkipResponseHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
+}
 
-	origin := r.Header.Get("Origin")
-	if !isAllowedOrigin(origin, cs.config) {
-		writeJSON(w, 403, ErrorResponse{Error: "该网页来源不允许访问采集桥。"}, "")
+func requestBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	defer r.Body.Close()
+	return io.ReadAll(io.LimitReader(r.Body, 16<<20))
+}
+
+func (cs *CollectorServer) handleLCUProxy(w http.ResponseWriter, r *http.Request) {
+	if !cs.allowRequest(w, r) {
 		return
 	}
-
-	if r.Method == "OPTIONS" {
-		setCORSHeaders(w, origin)
-		w.WriteHeader(204)
+	origin := r.Header.Get("Origin")
+	if !allowReadOnlyProxy(w, r) {
+		return
+	}
+	if !isAllowedLCUPath(r.URL.Path) {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "该客户端接口不在采集白名单中。"}, origin)
+		return
+	}
+	body, err := requestBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "读取代理请求失败。"}, origin)
 		return
 	}
 
 	client, err := cs.getCachedClient()
 	if err != nil {
-		writeJSON(w, 503, ErrorResponse{Error: fmt.Sprintf("未发现客户端: %s", err.Error())}, origin)
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: fmt.Sprintf("未发现客户端: %s", err.Error())}, origin)
 		return
 	}
-
-	// 去掉 /proxy/lcu 前缀，拼到 LCU BaseURL 后面
 	endpoint := strings.TrimPrefix(r.URL.Path, "/proxy/lcu")
 	if r.URL.RawQuery != "" {
 		endpoint += "?" + r.URL.RawQuery
 	}
-	targetURL := client.BaseURL + endpoint
 
-	// 第一次尝试
-	status := cs.proxyRequest(w, r, targetURL, client.Authorization)
-	if status != 401 && status != 403 {
-		return
-	}
-
-	// 认证失败（token 过期），清除缓存并重新发现，然后重试
-	fmt.Fprintf(os.Stderr, "[代理] LCU 返回 %d（认证失败），重新发现客户端...\n", status)
-	cs.clearCachedClient()
-	client, err = cs.getCachedClient()
+	response, err := forwardRequest(r, client.BaseURL+endpoint, client.Authorization, body)
 	if err != nil {
-		// 注意：此时 w 已写入 401/403 响应，不再重复写入
-		return
-	}
-
-	// 用新 token 重试：构造新的 proxy request（w 已在第一次写入，不能再写）
-	targetURL = client.BaseURL + endpoint
-	proxyReq, reqErr := http.NewRequest(r.Method, targetURL, http.NoBody)
-	if reqErr != nil {
-		return
-	}
-	proxyReq.Header.Set("Authorization", client.Authorization)
-	resp, respErr := lcuHTTPClient().Do(proxyReq)
-	if respErr != nil {
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return // 重试仍然失败，放弃
-	}
-
-	// 重试成功：向客户端返回实际数据（不能调用 proxyRequest 因为它会再次写 CORS 头）
-	for key, values := range resp.Header {
-		for _, v := range values {
-			w.Header().Add(key, v)
+		// 客户端重启后端口通常会变化；连接失败时立即重新发现并只重试一次。
+		cs.clearCachedClient()
+		client, err = cs.getCachedClient()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: fmt.Sprintf("客户端连接已失效: %s", err.Error())}, origin)
+			return
+		}
+		response, err = forwardRequest(r, client.BaseURL+endpoint, client.Authorization, body)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: fmt.Sprintf("代理重试失败: %s", err.Error())}, origin)
+			return
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		_ = response.Body.Close()
+		cs.clearCachedClient()
+		client, err = cs.getCachedClient()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: fmt.Sprintf("客户端认证已失效: %s", err.Error())}, origin)
+			return
+		}
+		response, err = forwardRequest(r, client.BaseURL+endpoint, client.Authorization, body)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: fmt.Sprintf("代理重试失败: %s", err.Error())}, origin)
+			return
+		}
+	}
+	defer response.Body.Close()
+	writeProxyResponse(w, response, origin)
 }
 
-// handleLiveProxy 代理 Live Client Data API 请求
-// 用法: GET /proxy/live/liveclientdata/allgamedata
 func (cs *CollectorServer) handleLiveProxy(w http.ResponseWriter, r *http.Request) {
-	cs.mu.Lock()
-	cs.lastRequest = time.Now()
-	cs.mu.Unlock()
-
+	if !cs.allowRequest(w, r) {
+		return
+	}
 	origin := r.Header.Get("Origin")
-	if !isAllowedOrigin(origin, cs.config) {
-		writeJSON(w, 403, ErrorResponse{Error: "该网页来源不允许访问采集桥。"}, "")
+	if !allowReadOnlyProxy(w, r) {
 		return
 	}
-
-	if r.Method == "OPTIONS" {
-		setCORSHeaders(w, origin)
-		w.WriteHeader(204)
+	if !isAllowedLivePath(r.URL.Path) {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: "该实时接口不在采集白名单中。"}, origin)
 		return
 	}
-
+	body, err := requestBody(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "读取代理请求失败。"}, origin)
+		return
+	}
 	endpoint := strings.TrimPrefix(r.URL.Path, "/proxy/live")
 	if r.URL.RawQuery != "" {
 		endpoint += "?" + r.URL.RawQuery
 	}
-	targetURL := "https://127.0.0.1:2999" + endpoint
-
-	cs.proxyRequest(w, r, targetURL, "")
+	response, err := forwardRequest(r, "https://127.0.0.1:2999"+endpoint, "", body)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: fmt.Sprintf("实时接口代理失败: %s", err.Error())}, origin)
+		return
+	}
+	defer response.Body.Close()
+	writeProxyResponse(w, response, origin)
 }
 
-// Start 启动服务器
 func (cs *CollectorServer) Start() error {
-	fmt.Printf("LGG 本机采集桥已启动。\n")
+	fmt.Printf("LGG 本机代理已启动（Go %s）。\n", proxyVersion)
 	fmt.Printf("监听地址：http://127.0.0.1:%d\n", cs.config.Port)
-	fmt.Println("请保持此窗口开启，然后在 LGG 的记录对局窗口点击 '采集数据' 。")
-	fmt.Println("按 Ctrl+C 可退出。")
+	fmt.Println("此程序只转发本机英雄联盟客户端接口，不解析或保存对局数据。")
+	fmt.Println("返回 LGG 网页点击“采集数据”即可；按 Ctrl+C 可退出。")
 
-	// 按需模式：空闲 2 分钟后自动退出
 	if cs.onDemand {
 		go cs.idleMonitor()
 	}
-
 	return cs.server.ListenAndServe()
 }
 
@@ -366,14 +393,13 @@ func (cs *CollectorServer) idleMonitor() {
 		idle := time.Since(cs.lastRequest)
 		cs.mu.Unlock()
 		if idle > 2*time.Minute {
-			fmt.Println("采集桥空闲超时，自动退出。")
-			cs.server.Close()
+			fmt.Println("本机代理空闲超时，自动退出。")
+			_ = cs.server.Close()
 			return
 		}
 	}
 }
 
-// LastRequestTime 返回最后请求时间
 func (cs *CollectorServer) LastRequestTime() time.Time {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
