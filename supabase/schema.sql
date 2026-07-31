@@ -30,6 +30,7 @@ create table if not exists public.matches (
   updated_at timestamptz not null default now(),
   winner text not null check (winner in ('blue', 'red')),
   duration_seconds integer,
+  game_id text,
   note text not null default '' check (char_length(note) <= 500),
   blue_team text not null default '蓝方',
   red_team text not null default '红方',
@@ -38,6 +39,9 @@ create table if not exists public.matches (
 
 create index if not exists matches_played_at_desc_idx
   on public.matches (played_at desc);
+
+create index if not exists matches_game_id_idx
+  on public.matches (game_id) where game_id is not null;
 
 create or replace function public.set_updated_at()
 returns trigger

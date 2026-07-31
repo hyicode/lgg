@@ -438,6 +438,11 @@ function ManualMatchDialog() {
           <button className="ghost" type="submit">读取对局</button>
         </form>
         <div className="recent-games hidden" id="recentGamesList" />
+        <div className="batch-import-bar hidden">
+          <button className="link" id="batchSelectToggle" type="button" data-action="selectAll">全选</button>
+          <button className="ghost" id="batchImportBtn" type="button">批量录入勾选对局</button>
+          <small>勾选多场后点击，逐场录入；已导入的自动跳过。</small>
+        </div>
       </div>
       <div style={{ padding: "0 18px 14px", color: "var(--muted)", fontSize: 13 }}>
         选择对局后将自动跳转到记录对局界面，在那里完成选手匹配和提交。

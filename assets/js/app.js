@@ -67,6 +67,8 @@ const state = {
   adminBatchBusy: false,
   heroStatsSortKey: "weight",
   heroStatsSortDirection: "desc",
+  batchImportQueue: [],
+  batchImportIndex: 0,
 };
 
 function escapeHtml(value = "") {
@@ -2383,6 +2385,7 @@ async function submitMatch(event) {
       blue_team: snapshot.blueTeam,
       red_team: snapshot.redTeam,
       participants: snapshot.participants,
+      game_id: state.collectedMatch?.gameId || null,
       ...(state.collectedMatch ? {
         duration_seconds: state.collectedMatch.durationSeconds,
       } : {}),
@@ -2400,6 +2403,7 @@ async function submitMatch(event) {
     $$(".reroll").forEach((item) => { item.disabled = true; });
     const cycleComplete = commitGlobalBpResults(snapshot);
     toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已写入共享战绩。");
+    maybeAdvanceBatchImport();
   } catch (caught) {
     const existing = state.draftId
       ? await state.supabase.from("matches").select("id").eq("id", state.draftId).maybeSingle()
@@ -2412,6 +2416,7 @@ async function submitMatch(event) {
       $("#recordBtn").textContent = "本局已记录";
       const cycleComplete = commitGlobalBpResults(snapshot || matchSnapshot());
       toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已成功记录。");
+      maybeAdvanceBatchImport();
     } else {
       error.textContent = caught.message || "提交失败，请检查网络后重试。";
     }
@@ -2527,6 +2532,85 @@ async function fetchRecentGameById(event) {
   }
 }
 
+// ---- 批量录入（队列模式）----
+
+async function checkGameIdExists(gameId) {
+  if (!gameId || !state.supabase) return false;
+  const { data, error } = await state.supabase
+    .from("matches")
+    .select("id")
+    .eq("game_id", gameId)
+    .maybeSingle();
+  return !error && Boolean(data?.id);
+}
+
+async function startBatchImport() {
+  const checked = $$(".recent-game-checkbox:checked");
+  if (!checked.length) {
+    toast("请至少勾选一场对局。");
+    return;
+  }
+
+  const games = [];
+  for (const cb of checked) {
+    const item = cb.closest(".recent-game-item");
+    if (item?._game) games.push(item._game);
+  }
+  if (!games.length) {
+    toast("无法读取选中的对局数据。");
+    return;
+  }
+
+  // 过滤已导入的对局
+  const statusEl = $("#manualCollectorStatus");
+  statusEl.textContent = "正在检查已导入对局…";
+  const filtered = [];
+  const skipped = [];
+  for (const game of games) {
+    const gameId = game.gameId;
+    if (gameId && await checkGameIdExists(gameId)) {
+      skipped.push(gameId);
+    } else {
+      filtered.push(game);
+    }
+  }
+  if (!filtered.length) {
+    statusEl.textContent = skipped.length
+      ? `选中的 ${skipped.length} 场对局均已导入，无需重复录入。`
+      : "没有可录入的对局。";
+    return;
+  }
+
+  state.batchImportQueue = filtered;
+  state.batchImportIndex = 0;
+  $("#manualMatchDialog").close();
+  const info = skipped.length ? `（已跳过 ${skipped.length} 场重复）` : "";
+  toast(`开始批量录入：共 ${filtered.length} 场对局${info}`);
+  loadNextBatchGame();
+}
+
+function loadNextBatchGame() {
+  const idx = state.batchImportIndex;
+  const queue = state.batchImportQueue;
+  if (idx >= queue.length) {
+    state.batchImportQueue = [];
+    state.batchImportIndex = 0;
+    toast("批量录入完成。");
+    return;
+  }
+  const game = queue[idx];
+  state.batchImportIndex = idx + 1;
+  const remaining = queue.length - idx;
+  $("#recordError").textContent = "";
+  $("#collectorStatus").textContent = `批量录入第 ${idx + 1} / ${queue.length} 场（剩余 ${remaining - 1} 场）。`;
+  selectRecentGame(game);
+}
+
+function maybeAdvanceBatchImport() {
+  if (!state.batchImportQueue.length) return;
+  setTimeout(() => loadNextBatchGame(), 600);
+}
+
 function handleManualCollectClick(event) {
   if (!testModeEnabled()) {
     fetchRecentGames();
@@ -2637,8 +2721,10 @@ function renderRecentGames(games) {
     const red = game.participants.filter(p => p.team === "red");
     const names = (p) => escapeHtml(p.accountName || p.championName || "?");
     const countStr = `蓝${blue.length}人 红${red.length}人`;
+    const gameId = game.gameId || "";
     return `
-      <button type="button" class="recent-game-item" data-game-idx="${idx}">
+      <label class="recent-game-item" data-game-idx="${idx}">
+        <input type="checkbox" class="recent-game-checkbox" data-game-idx="${idx}" data-game-id="${escapeHtml(gameId)}" />
         <span class="rg-num">#${idx + 1}</span>
         <span class="rg-time">${game.playedAt ? new Date(game.playedAt).toLocaleString("zh-CN") : "时间未知"}</span>
         <span class="rg-dur">${dur} · ${countStr}</span>
@@ -2646,11 +2732,56 @@ function renderRecentGames(games) {
           <span class="rg-blue">蓝: ${blue.map(names).join(", ") || "—"}</span>
           <span class="rg-red">红: ${red.map(names).join(", ") || "—"}</span>
         </span>
-      </button>`;
+      </label>`;
   }).join("");
-  $$(".recent-game-item").forEach((btn) => {
-    btn.addEventListener("click", () => selectRecentGame(games[parseInt(btn.dataset.gameIdx)]));
+
+  $(".batch-import-bar").classList.toggle("hidden", !games.length);
+  updateBatchSelectToggle(games.length);
+
+  // 存储游戏对象引用，供批量导入使用
+  $$(".recent-game-item").forEach((item) => {
+    const idx = parseInt(item.dataset.gameIdx, 10);
+    item._game = games[idx];
+
+    // 复选框点击
+    const checkbox = item.querySelector(".recent-game-checkbox");
+    checkbox.addEventListener("click", (event) => {
+      event.stopPropagation();
+      updateBatchSelectToggle(games.length);
+    });
+
+    // 点击行（非复选框）→ 单选录入
+    item.addEventListener("click", (event) => {
+      if (event.target.matches(".recent-game-checkbox")) return;
+      selectRecentGame(games[parseInt(item.dataset.gameIdx)]);
+    });
   });
+}
+
+function updateBatchSelectToggle(total) {
+  const allCb = $$(".recent-game-checkbox");
+  const checked = allCb.filter((cb) => cb.checked).length;
+  const toggle = $("#batchSelectToggle");
+  if (!toggle) return;
+  if (checked === 0) {
+    toggle.textContent = "全选";
+    toggle.dataset.action = "selectAll";
+  } else {
+    toggle.textContent = "取消全选";
+    toggle.dataset.action = "deselectAll";
+  }
+}
+
+function toggleBatchSelectAll() {
+  const toggle = $("#batchSelectToggle");
+  const action = toggle?.dataset.action;
+  const allCb = $$(".recent-game-checkbox");
+  if (action === "selectAll") {
+    allCb.forEach((cb) => { cb.checked = true; });
+  } else {
+    allCb.forEach((cb) => { cb.checked = false; });
+  }
+  updateBatchSelectToggle(allCb.length);
 }
 
 function selectRecentGame(game) {
@@ -3687,6 +3818,8 @@ function bindEvents() {
   $("#manualMatchBtn").addEventListener("click", openManualMatchDialog);
   $("#manualCollectBtn").addEventListener("click", handleManualCollectClick);
   $("#manualGameIdForm").addEventListener("submit", fetchRecentGameById);
+  $("#batchImportBtn").addEventListener("click", startBatchImport);
+  $("#batchSelectToggle").addEventListener("click", toggleBatchSelectAll);
   $("#localMappingsBtn").addEventListener("click", openLocalMappings);
   $("#localMappingForm").addEventListener("submit", saveLocalMapping);
   $("#localMappingsList").addEventListener("click", (event) => {

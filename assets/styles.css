@@ -3120,7 +3120,43 @@ tr.unmatched .lane {
   }
 }
 
+.batch-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.batch-import-bar.hidden {
+  display: none;
+}
+
+.batch-import-bar small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.batch-import-bar .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #76daf0;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.batch-import-bar .link:hover {
+  color: #a0e8ff;
+  text-decoration: underline;
+}
+
 .recent-game-item {
+  cursor: pointer;
   width: 100%;
   display: flex;
   flex-wrap: wrap;
@@ -3136,6 +3172,14 @@ tr.unmatched .lane {
 .recent-game-item:hover {
   border-color: rgba(66, 212, 232, 0.55);
   background: rgba(18, 42, 59, 0.9);
+}
+
+.recent-game-checkbox {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: #3498db;
+  cursor: pointer;
 }
 
 .rg-num {
