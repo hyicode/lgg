@@ -522,6 +522,9 @@ function LocalMappingsDialog() {
           采集对局和录入历史对局时会自动匹配；同一玩家或游戏 ID 只能保留一条关系。
         </p>
         <div className="form-error" id="localMappingError" role="alert" />
+        <div className="local-mappings-toolbar">
+          <button className="ghost danger" id="resetMappingsBtn" type="button">重置为默认</button>
+        </div>
         <div className="local-mappings-list" id="localMappingsList" />
       </div>
     </dialog>

@@ -251,6 +251,40 @@ function searchForms(value = "") {
 
 const NAME_MAP_KEY = "lgg-name-map-v2";
 
+const DEFAULT_NAME_MAPPINGS: Record<string, string> = {
+  "b6cc21ba-90dd-4f1e-87f8-ccc136ac0db9": "机水饮的空虚入遁#14780",
+  "c2c1dd8a-58ae-4478-9262-acd92b92e913": "LGG丶Trouble#20924",
+  "a0001e52-9bd3-46ca-8361-d0d0afd20d22": "LGG丶Star#60418",
+  "9155feeb-7cd6-4468-ac3f-475df4b1a0ae": "欢天喜地风车车#64531",
+  "9a1dc312-dc0e-4d59-a135-1456f74b3ced": "RBTree#48942",
+  "6e38f215-4e66-4a43-83c9-87a69fe6a3ea": "快乐小鹿#75726",
+  "f0b0a69c-09aa-4b96-bea8-c4c25841497f": "LGG丶CR#80435",
+  "0cd98de3-bb97-483d-a092-fd6bc156722d": "LGG丶LuZiYe#55264",
+  "0df1846a-e8fc-4848-8e9c-9dcba4d1725d": "LGG丶丢丢丢丢丢#49765",
+  "8c3ba6c4-23bb-49bd-8c78-60f7d4a96cf7": "LGG丶BigFather#15603",
+  "aff4b510-88ca-491a-9272-ae3b2decf396": "巴西打野#47893",
+  "c7867d61-fe9f-4ae4-800e-92f902a4cc41": "LGG丶YY#31580",
+  "bd4d95f0-dca4-404d-a6ef-08f26355ab3b": "LGG丶Melody#24953",
+  "aee555d3-67b4-4a6e-872b-52851135946a": "交大丶长江学者#65394",
+  "b246b320-1152-4b9d-af6e-b98e77900fe3": "最初后来最终丶#72324",
+  "c6eca302-a6a2-4219-a3d7-1156d6ee13bf": "LGG丶Gangster#79722",
+  "3a4d548e-d55d-409e-8ca3-6d9b00d519a5": "LGG丶XX#53399",
+  "c5d8f4b2-b97d-432b-8ccf-2a5a8c93f610": "打哪个ap#65811",
+  "c8df7d72-5f70-4dca-9210-3d3aaf383e37": "手抖乱来#22663",
+};
+
+function buildDefaultMappings() {
+  const byPlayerId: Record<string, string> = {};
+  const byAccountName: Record<string, string> = {};
+  const byPlayerName: Record<string, string> = {};
+  const byGameId: Record<string, string> = {};
+  for (const [playerId, gameId] of Object.entries(DEFAULT_NAME_MAPPINGS)) {
+    byPlayerId[playerId] = gameId;
+    byAccountName[normalizeName(gameId)] = playerId;
+  }
+  return { byPlayerId, byAccountName, byPlayerName, byGameId, version: 3 };
+}
+
 function loadNameMappings() {
   try {
     const raw = localStorage.getItem(NAME_MAP_KEY);
@@ -310,7 +344,7 @@ function loadNameMappings() {
       return map;
     }
   } catch { /* ignore */ }
-  return { byPlayerId: {}, byAccountName: {}, byPlayerName: {}, byGameId: {}, version: 3 };
+  return buildDefaultMappings();
 }
 
 function saveBidirectionalMapping(playerId, accountName) {
@@ -456,6 +490,15 @@ function saveLocalMapping(event) {
 
 function fuzzySearch(value, query) {
   return fuzzyMatches(searchForms(value), query);
+}
+
+function resetMappings() {
+  try {
+    localStorage.removeItem(NAME_MAP_KEY);
+    localStorage.removeItem("lgg-name-map-v1");
+  } catch { /* ignore */ }
+  renderLocalMappings();
+  toast("已重置为默认映射关系。");
 }
 
 function formatNumber(value, digits = 1) {
@@ -3594,6 +3637,7 @@ function bindEvents() {
   $("#batchSelectToggle").addEventListener("click", toggleBatchSelectAll);
   $("#localMappingsBtn").addEventListener("click", openLocalMappings);
   $("#localMappingForm").addEventListener("submit", saveLocalMapping);
+$("#resetMappingsBtn")?.addEventListener("click", resetMappings);
   $("#localMappingsList").addEventListener("click", (event) => {
     const edit = event.target.closest("[data-edit-local-mapping]");
     const remove = event.target.closest("[data-delete-local-mapping]");
