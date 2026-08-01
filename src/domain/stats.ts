@@ -1,14 +1,66 @@
-export function asDate(value) {
+export type TeamSide = "blue" | "red";
+
+export type DateInput = Date | string | number | { toDate(): Date } | null | undefined;
+
+export interface ChampionRef {
+  slug: string;
+  name: string;
+}
+
+export interface ParticipantStats {
+  kills?: number | string | null;
+  deaths?: number | string | null;
+  assists?: number | string | null;
+}
+
+export interface MatchParticipant {
+  playerId?: string | null;
+  playerName?: string | null;
+  team: TeamSide;
+  positionLabel?: string | null;
+  position?: string | null;
+  laneLabel?: string | null;
+  lane?: string | null;
+  champion: ChampionRef;
+  stats?: ParticipantStats | null;
+}
+
+export interface MatchRecord {
+  playedAt: DateInput;
+  winner: TeamSide;
+  participants?: MatchParticipant[] | null;
+}
+
+export interface PlayerAggregate {
+  playerId: string;
+  games: number;
+  wins: number;
+  losses: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+}
+
+type AggregateField = Exclude<keyof PlayerAggregate, "playerId">;
+type PersistedPlayerStats = Partial<PlayerAggregate> & { player_id?: string };
+
+export function asDate(value: DateInput): Date | null {
   if (!value) return null;
   if (value instanceof Date) return value;
-  if (typeof value.toDate === "function") return value.toDate();
-  const parsed = new Date(value);
+  if (typeof value === "object" && "toDate" in value) return value.toDate();
+  const parsed = new Date(value as string | number);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-export function filterMatchesByRange(matches, range, fromValue = "", toValue = "", now = new Date()) {
-  let from = null;
-  let to = null;
+export function filterMatchesByRange<T extends MatchRecord>(
+  matches: T[],
+  range: string,
+  fromValue = "",
+  toValue = "",
+  now = new Date(),
+): T[] {
+  let from: Date | null = null;
+  let to: Date | null = null;
   if (["7", "30"].includes(range)) {
     from = new Date(now);
     from.setDate(from.getDate() - Number(range));
@@ -22,17 +74,17 @@ export function filterMatchesByRange(matches, range, fromValue = "", toValue = "
   });
 }
 
-function favorite(counts) {
+function favorite(counts: Map<string, number>): string {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]), "zh-CN"))[0]?.[0] || "—";
 }
 
-function numericStat(value) {
+function numericStat(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
 }
 
-export function aggregatePlayerStats(matches) {
-  const players = new Map();
+export function aggregatePlayerStats(matches: MatchRecord[]): Map<string, PlayerAggregate> {
+  const players = new Map<string, PlayerAggregate>();
   for (const match of matches) {
     for (const slot of match.participants || []) {
       const playerId = typeof slot.playerId === "string" ? slot.playerId.trim() : "";
@@ -62,13 +114,25 @@ export function aggregatePlayerStats(matches) {
   return players;
 }
 
-export function comparePlayerStats(matches, persistedStats) {
+export function comparePlayerStats(
+  matches: MatchRecord[],
+  persistedStats: Map<string, PersistedPlayerStats> | PersistedPlayerStats[],
+) {
   const expected = aggregatePlayerStats(matches);
-  const persisted = persistedStats instanceof Map
+  const persisted: Map<string, PersistedPlayerStats> = persistedStats instanceof Map
     ? persistedStats
-    : new Map((persistedStats || []).map((row) => [row.player_id || row.playerId, row]));
-  const fields = ["games", "wins", "losses", "kills", "deaths", "assists"];
-  const discrepancies = [];
+    : new Map(
+      (persistedStats || [])
+        .map((row) => [row.player_id || row.playerId, row] as const)
+        .filter((entry): entry is readonly [string, PersistedPlayerStats] => Boolean(entry[0])),
+    );
+  const fields: AggregateField[] = ["games", "wins", "losses", "kills", "deaths", "assists"];
+  const discrepancies: Array<{
+    playerId: string;
+    changedFields: AggregateField[];
+    expected?: PlayerAggregate;
+    persisted?: PersistedPlayerStats;
+  }> = [];
   for (const playerId of new Set([...expected.keys(), ...persisted.keys()])) {
     const expectedRow = expected.get(playerId);
     const persistedRow = persisted.get(playerId);
@@ -78,13 +142,36 @@ export function comparePlayerStats(matches, persistedStats) {
   return { expected, discrepancies };
 }
 
-export function computeLeaderboards(matches) {
-  const chronological = [...matches].sort((a, b) => asDate(a.playedAt) - asDate(b.playedAt));
-  const players = new Map();
-  const champions = new Map();
+interface PlayerLeaderboardSeed {
+  playerId: string;
+  name: string;
+  games: number;
+  wins: number;
+  losses: number;
+  currentStreak: number;
+  bestStreak: number;
+  positions: Map<string, number>;
+  champions: Map<string, number>;
+}
+
+interface ChampionLeaderboardSeed {
+  slug: string;
+  name: string;
+  picks: number;
+  wins: number;
+  bans: number;
+  matchesPresent: number;
+}
+
+export function computeLeaderboards(matches: MatchRecord[]) {
+  const chronological = [...matches].sort(
+    (a, b) => (asDate(a.playedAt)?.getTime() ?? 0) - (asDate(b.playedAt)?.getTime() ?? 0),
+  );
+  const players = new Map<string, PlayerLeaderboardSeed>();
+  const champions = new Map<string, ChampionLeaderboardSeed>();
 
   for (const match of chronological) {
-    const presentChampions = new Set();
+    const presentChampions = new Set<string>();
     for (const slot of match.participants || []) {
       const won = slot.team === match.winner;
       const playerId = typeof slot.playerId === "string" ? slot.playerId.trim() : "";
@@ -93,7 +180,7 @@ export function computeLeaderboards(matches) {
         if (!player) {
           player = {
             playerId,
-            name: slot.playerName,
+            name: slot.playerName || "—",
             games: 0,
             wins: 0,
             losses: 0,
@@ -150,7 +237,10 @@ export function computeLeaderboards(matches) {
   const blueWins = matches.filter((match) => match.winner === "blue").length;
   const recentCutoff = new Date();
   recentCutoff.setDate(recentCutoff.getDate() - 30);
-  const recentMatches = matches.filter((match) => asDate(match.playedAt) >= recentCutoff).length;
+  const recentMatches = matches.filter((match) => {
+    const playedAt = asDate(match.playedAt);
+    return playedAt !== null && playedAt >= recentCutoff;
+  }).length;
   const mostActive = [...playerRows].sort((a, b) => b.games - a.games || b.wins - a.wins)[0];
 
   return {

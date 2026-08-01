@@ -1,72 +1,16 @@
-import { useEffect } from "react";
+import type { MouseEvent } from "react";
+import { AppHeader } from "./components/AppHeader";
+import { AuthGate } from "./components/AuthGate";
+import { DateRangeFilters } from "./components/DateRangeFilters";
+import { useAuth } from "./hooks/useAuth";
+import { useAppController } from "./hooks/useAppController";
+import { useViewNavigation } from "./hooks/useViewNavigation";
+import { useSharedData } from "./hooks/useSharedData";
+import type { MemberProfile } from "./auth/authState";
+import type { ViewId } from "./navigation/viewState";
 
-function AuthGate() {
-  return (
-    <section className="auth-gate" id="authGate">
-      <div className="login-card">
-        <div className="eyebrow">League of Legends · Custom PVP</div>
-        <h1>LGG</h1>
-        <p>登录后进入天命、共享战绩与排行榜。</p>
-        <form id="loginForm">
-          <label>
-            账号
-            <input id="loginAccount" autoComplete="username" placeholder="请输入账号" required />
-          </label>
-          <label>
-            密码
-            <input id="loginPassword" type="password" autoComplete="current-password" required />
-          </label>
-          <button className="primary" id="loginBtn" type="submit">进入 LGG</button>
-        </form>
-        <div className="form-error" id="loginError" role="alert" />
-        <div className="setup-warning hidden" id="supabaseSetupWarning">
-          Supabase 尚未配置。请先填写 <code>assets/js/supabase-config.js</code>。
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function AppHeader() {
-  return (
-    <>
-      <header className="hero">
-        <div className="hero-brand">
-          <div className="eyebrow">League of Legends · Custom PVP</div>
-          <h1>LGG · 天命</h1>
-          <p>天命已定，胜负由你们共同记录。</p>
-        </div>
-        <div className="account-box">
-          <span id="accountLabel" />
-          <button className="mini" id="logoutBtn">退出</button>
-        </div>
-      </header>
-
-      <nav className="main-nav" aria-label="主功能">
-        <button className="nav-btn active" data-view="rollView">天命</button>
-        <button className="nav-btn" data-view="historyView">对局历史</button>
-        <button className="nav-btn" data-view="leaderboardView">战绩排行</button>
-        <button className="nav-btn admin-only hidden" data-view="adminView">管理</button>
-      </nav>
-
-      <div className="toolbar">
-        <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>
-        <div className="toolbar-actions">
-          <button
-            className="mini admin-only hidden test-data-toggle"
-            id="testDataModeBtn"
-            type="button"
-            aria-pressed="false"
-          >
-            测试数据：关
-          </button>
-          <button className="mini" id="localMappingsBtn">游戏 ID 映射</button>
-          <button className="mini" id="heroStatsBtn">英雄数据</button>
-          <button className="mini" id="resetBtn">清空阵容</button>
-        </div>
-      </div>
-    </>
-  );
+function viewClassName(active: boolean): string {
+  return `view${active ? "" : " hidden"}`;
 }
 
 function TeamSetup({ side, name }: { side: "blue" | "red"; name: string }) {
@@ -139,9 +83,9 @@ function ClashDivider() {
   );
 }
 
-function RollView() {
+function RollView({ active }: { active: boolean }) {
   return (
-    <section className="view" id="rollView">
+    <section className={viewClassName(active)} id="rollView">
       <section id="setupSection">
         <div className="setup">
           <TeamSetup side="blue" name="蓝方" />
@@ -161,24 +105,9 @@ function RollView() {
   );
 }
 
-function DateRangeFilters({ prefix }: { prefix: "history" | "rank" | "adminMatch" }) {
+function HistoryView({ active }: { active: boolean }) {
   return (
-    <>
-      <select id={`${prefix}Range`} defaultValue="all">
-        <option value="all">全部时间</option>
-        <option value="7">最近 1 周</option>
-        <option value="30">最近 30 天</option>
-        <option value="custom">自定义</option>
-      </select>
-      <input className="hidden" id={`${prefix}From`} type="date" aria-label="开始日期" />
-      <input className="hidden" id={`${prefix}To`} type="date" aria-label="结束日期" />
-    </>
-  );
-}
-
-function HistoryView() {
-  return (
-    <section className="view hidden" id="historyView">
+    <section className={viewClassName(active)} id="historyView">
       <div className="section-head">
         <div><h2>对局历史</h2><p>仅手动提交的比赛会出现在这里。</p></div>
         <div className="filters">
@@ -196,9 +125,9 @@ function HistoryView() {
   );
 }
 
-function LeaderboardView() {
+function LeaderboardView({ active }: { active: boolean }) {
   return (
-    <section className="view hidden" id="leaderboardView">
+    <section className={viewClassName(active)} id="leaderboardView">
       <div className="section-head">
         <div><h2>共享战绩</h2><p>按正式提交的对局实时计算。</p></div>
         <div className="filters"><DateRangeFilters prefix="rank" /></div>
@@ -232,9 +161,9 @@ function LeaderboardView() {
   );
 }
 
-function AdminView() {
+function AdminView({ active }: { active: boolean }) {
   return (
-    <section className="view hidden" id="adminView">
+    <section className={viewClassName(active)} id="adminView">
       <div className="section-head">
         <div><h2>管理员控制台</h2><p>维护共享选手库并修正正式比赛。</p></div>
         <div className="admin-head-actions admin-only hidden">
@@ -296,20 +225,36 @@ function AdminView() {
   );
 }
 
-function MainApplication() {
+function MainApplication({
+  hidden,
+  member,
+  activeView,
+  onNavigate,
+  onLogout,
+}: {
+  hidden: boolean;
+  member: MemberProfile | null;
+  activeView: ViewId;
+  onNavigate(view: ViewId): void;
+  onLogout(): Promise<void>;
+}) {
   return (
-    <main className="app hidden" id="app">
-      <AppHeader />
-      <RollView />
-      <HistoryView />
-      <LeaderboardView />
-      <AdminView />
+    <main className={`app${hidden ? " hidden" : ""}`} id="app">
+      <AppHeader activeView={activeView} member={member} onLogout={onLogout} onNavigate={onNavigate} />
+      <RollView active={activeView === "rollView"} />
+      <HistoryView active={activeView === "historyView"} />
+      <LeaderboardView active={activeView === "leaderboardView"} />
+      <AdminView active={activeView === "adminView"} />
     </main>
   );
 }
 
-function DialogCloseButton() {
-  return <button className="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button>;
+function closeContainingDialog(event: MouseEvent<HTMLButtonElement>) {
+  event.currentTarget.closest("dialog")?.close();
+}
+
+function DialogCloseButton({ id }: { id?: string }) {
+  return <button className="icon-btn" id={id} type="button" onClick={closeContainingDialog} aria-label="关闭">×</button>;
 }
 
 function CollectorPreview() {
@@ -390,7 +335,7 @@ function RecordDialog() {
         </div>
         <div className="form-error" id="recordError" role="alert" />
         <div className="dialog-actions">
-          <button className="ghost" type="button" data-close-dialog>取消</button>
+          <button className="ghost" type="button" onClick={closeContainingDialog}>取消</button>
           <button className="primary" id="submitMatchBtn" type="submit">确认提交</button>
         </div>
       </form>
@@ -415,7 +360,7 @@ function EditMatchDialog() {
         </div>
         <div className="form-error" id="editMatchError" role="alert" />
         <div className="dialog-actions">
-          <button className="ghost" type="button" data-close-dialog>取消</button>
+          <button className="ghost" type="button" onClick={closeContainingDialog}>取消</button>
           <button className="primary" id="saveMatchBtn" type="submit">保存修改</button>
         </div>
       </form>
@@ -456,7 +401,7 @@ function HeroStatsDialog() {
     <dialog id="heroStatsDialog" className="wide-dialog">
       <div className="dialog-head">
         <h2>OPGG 英雄位置数据</h2>
-        <button className="icon-btn" id="heroStatsClose" aria-label="关闭">×</button>
+        <DialogCloseButton id="heroStatsClose" />
       </div>
       <div className="rank-tools">
         <input className="search-input" id="heroSearch" type="search" placeholder="支持中文、拼音或首字母…" />
@@ -577,6 +522,9 @@ function LocalMappingsDialog() {
           采集对局和录入历史对局时会自动匹配；同一玩家或游戏 ID 只能保留一条关系。
         </p>
         <div className="form-error" id="localMappingError" role="alert" />
+        <div className="local-mappings-toolbar">
+          <button className="ghost danger" id="resetMappingsBtn" type="button">重置为默认</button>
+        </div>
         <div className="local-mappings-list" id="localMappingsList" />
       </div>
     </dialog>
@@ -598,21 +546,38 @@ function Dialogs() {
   );
 }
 
-function LegacyController() {
-  useEffect(() => {
-    void import("../assets/js/app.js");
-  }, []);
-
-  return null;
-}
-
 export default function App() {
+  const auth = useAuth();
+  const controllerError = useAppController();
+  const authenticated = auth.snapshot.status === "authenticated";
+  const navigation = useViewNavigation(auth.snapshot.member?.role === "admin");
+  const sharedData = useSharedData(authenticated);
+
   return (
     <>
-      <AuthGate />
-      <MainApplication />
+      <AuthGate
+        configured={auth.configured}
+        error={auth.snapshot.error}
+        hidden={authenticated}
+        loading={auth.snapshot.status === "loading" || auth.submitting}
+        onLogin={auth.login}
+      />
+      <MainApplication
+        activeView={navigation.activeView}
+        hidden={!authenticated}
+        member={auth.snapshot.member}
+        onNavigate={navigation.navigate}
+        onLogout={auth.logout}
+      />
       <Dialogs />
-      <LegacyController />
+      {controllerError ? (
+        <div className="form-error controller-error" role="alert">
+          应用初始化失败，请刷新页面后重试。
+        </div>
+      ) : null}
+      {sharedData.error ? (
+        <div className="form-error controller-error" role="alert">{sharedData.error}</div>
+      ) : null}
     </>
   );
 }

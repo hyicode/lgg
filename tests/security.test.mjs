@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { canAccessView } from "../src/navigation/viewState.ts";
 
 const schema = await readFile(new URL("../supabase/schema.sql", import.meta.url), "utf8");
-const app = await readFile(new URL("../assets/js/app.js", import.meta.url), "utf8");
+const app = await readFile(new URL("../src/controllers/appController.ts", import.meta.url), "utf8");
 
 test("公共账号只能新增正式对局和缺失的 Riot 账号引用", () => {
   assert.match(schema, /create policy "matches inserted by members"[\s\S]*?for insert[\s\S]*?public\.is_active_member\(\)/);
@@ -27,5 +28,6 @@ test("公共写入流程不使用 upsert 更新既有账号", () => {
 });
 
 test("公共账号看不到也无法切换到管理界面", () => {
-  assert.match(app, /viewId === "adminView" && !isAdmin\(\)/);
+  assert.equal(canAccessView("adminView", false), false);
+  assert.equal(canAccessView("adminView", true), true);
 });

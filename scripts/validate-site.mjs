@@ -4,12 +4,25 @@ const files = [
   "index.html",
   "src/main.tsx",
   "src/App.tsx",
+  "src/components/AppHeader.tsx",
+  "src/components/AuthGate.tsx",
+  "src/components/DateRangeFilters.tsx",
+  "src/hooks/useAuth.ts",
+  "src/hooks/useAppController.ts",
+  "src/hooks/useViewNavigation.ts",
+  "src/hooks/useSharedData.ts",
+  "src/auth/authState.ts",
+  "src/data/models.ts",
+  "src/data/sharedData.ts",
+  "src/navigation/viewState.ts",
+  "src/services/supabaseClient.ts",
+  "src/domain/stats.ts",
+  "src/domain/search.ts",
+  "src/domain/collector.ts",
+  "src/config/supabase.ts",
   "vite.config.ts",
   "assets/styles.css",
-  "assets/js/app.js",
-  "assets/js/stats-core.js",
-  "assets/js/search-core.js",
-  "assets/js/supabase-config.js",
+  "src/controllers/appController.ts",
   "supabase/schema.sql",
 ];
 
@@ -18,7 +31,13 @@ for (const file of files) {
   if (!content.trim()) throw new Error(`${file} is empty`);
 }
 
-const appMarkup = await readFile("src/App.tsx", "utf8");
+const componentFiles = [
+  "src/App.tsx",
+  "src/components/AppHeader.tsx",
+  "src/components/AuthGate.tsx",
+  "src/components/DateRangeFilters.tsx",
+];
+const appMarkup = (await Promise.all(componentFiles.map((file) => readFile(file, "utf8")))).join("\n");
 const ids = [...appMarkup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
 ids.push("blueName", "bluePlayers", "redName", "redPlayers");
 for (const prefix of ["history", "rank", "adminMatch"]) {
@@ -27,7 +46,7 @@ for (const prefix of ["history", "rank", "adminMatch"]) {
 const duplicates = ids.filter((id, index) => ids.indexOf(id) !== index);
 if (duplicates.length) throw new Error(`Duplicate HTML ids: ${[...new Set(duplicates)].join(", ")}`);
 
-const app = await readFile("assets/js/app.js", "utf8");
+const app = await readFile("src/controllers/appController.ts", "utf8");
 for (const match of app.matchAll(/\$\("([#.][^"]+)"\)/g)) {
   const selector = match[1];
   if (/^#[A-Za-z][\w-]*$/.test(selector) && !ids.includes(selector.slice(1))) {

@@ -7,7 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "collector": "go -C collector-go run .",
-    "test": "node tests/run-tests.mjs",
+    "test": "node --experimental-strip-types tests/run-tests.mjs",
     "validate": "node scripts/validate-site.mjs",
     "check": "pnpm validate && pnpm test && pnpm build"
   },

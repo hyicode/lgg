@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aggregatePlayerStats, comparePlayerStats, computeLeaderboards, filterMatchesByRange } from "../assets/js/stats-core.js";
+import { aggregatePlayerStats, comparePlayerStats, computeLeaderboards, filterMatchesByRange } from "../src/domain/stats.ts";
 
 function match(id, playedAt, winner, bluePlayer, redPlayer, blueChampion, redChampion) {
   return {
