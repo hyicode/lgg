@@ -1,4 +1,4 @@
-export function normalizeSearchText(value = "") {
+export function normalizeSearchText(value: unknown = ""): string {
   return String(value)
     .trim()
     .toLocaleLowerCase("zh-CN")
@@ -6,7 +6,7 @@ export function normalizeSearchText(value = "") {
     .replace(/[\s_-]+/g, " ");
 }
 
-export function createSearchForms(value, aliases = []) {
+export function createSearchForms(value: unknown, aliases: unknown[] = []): string[] {
   const forms = [value, ...aliases]
     .map(normalizeSearchText)
     .filter(Boolean)
@@ -14,7 +14,7 @@ export function createSearchForms(value, aliases = []) {
   return [...new Set(forms)];
 }
 
-export function isSubsequence(query, candidate) {
+export function isSubsequence(query: string, candidate: string): boolean {
   let queryIndex = 0;
   for (const character of candidate) {
     if (character === query[queryIndex]) queryIndex += 1;
@@ -23,7 +23,7 @@ export function isSubsequence(query, candidate) {
   return false;
 }
 
-export function fuzzyMatches(forms, query) {
+export function fuzzyMatches(forms: string[], query: unknown): boolean {
   const terms = normalizeSearchText(query).split(" ").filter(Boolean);
   if (!terms.length) return true;
   return terms.every((term) => forms.some((form) => (

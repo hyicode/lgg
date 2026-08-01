@@ -7,7 +7,7 @@ import {
   normalizeClientPositionKey,
   normalizeClientTeam,
   riotIdFromClientPlayer,
-} from "../assets/js/collector-core.js";
+} from "../src/domain/collector.ts";
 
 function draftResult(team, playerName, championId, slug) {
   return {

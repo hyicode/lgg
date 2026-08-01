@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSearchForms, fuzzyMatches, isSubsequence } from "../assets/js/search-core.js";
+import { createSearchForms, fuzzyMatches, isSubsequence } from "../src/domain/search.ts";
 
 test("支持中文、全拼和拼音首字母搜索", () => {
   const forms = createSearchForms("小丑皇", ["xiao chou huang", "xch"]);

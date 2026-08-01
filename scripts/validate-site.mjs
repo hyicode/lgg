@@ -4,12 +4,14 @@ const files = [
   "index.html",
   "src/main.tsx",
   "src/App.tsx",
+  "src/hooks/useLegacyController.ts",
+  "src/domain/stats.ts",
+  "src/domain/search.ts",
+  "src/domain/collector.ts",
+  "src/config/supabase.ts",
   "vite.config.ts",
   "assets/styles.css",
   "assets/js/app.js",
-  "assets/js/stats-core.js",
-  "assets/js/search-core.js",
-  "assets/js/supabase-config.js",
   "supabase/schema.sql",
 ];
 

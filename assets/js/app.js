@@ -1,6 +1,6 @@
-import { supabaseConfig, accountAliases } from "./supabase-config.js";
-import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "./stats-core.js";
-import { createSearchForms, fuzzyMatches } from "./search-core.js";
+import { supabaseConfig, accountAliases } from "../../src/config/supabase.ts";
+import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "../../src/domain/stats.ts";
+import { createSearchForms, fuzzyMatches } from "../../src/domain/search.ts";
 import {
   assignParticipantsToFixedSlots,
   championSlug,
@@ -9,7 +9,7 @@ import {
   normalizeClientPositionKey,
   normalizeClientTeam,
   riotIdFromClientPlayer,
-} from "./collector-core.js";
+} from "../../src/domain/collector.ts";
 import { createClient } from "@supabase/supabase-js";
 import { pinyin } from "pinyin-pro";
 

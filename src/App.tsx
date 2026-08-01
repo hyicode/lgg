@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useLegacyController } from "./hooks/useLegacyController";
 
 function AuthGate() {
   return (
@@ -598,21 +598,19 @@ function Dialogs() {
   );
 }
 
-function LegacyController() {
-  useEffect(() => {
-    void import("../assets/js/app.js");
-  }, []);
-
-  return null;
-}
-
 export default function App() {
+  const controllerError = useLegacyController();
+
   return (
     <>
       <AuthGate />
       <MainApplication />
       <Dialogs />
-      <LegacyController />
+      {controllerError ? (
+        <div className="form-error controller-error" role="alert">
+          应用初始化失败，请刷新页面后重试。
+        </div>
+      ) : null}
     </>
   );
 }

@@ -14,10 +14,11 @@
 
 ## 项目结构
 
-- `src/`：React + TypeScript 页面组件与应用入口。
-- `assets/js/`：天命编排、战绩和客户端采集等兼容业务控制器。
+- `src/`：React + TypeScript 应用入口、Hooks、领域模型和业务模块。
+- `src/domain/`：经过 TypeScript 严格检查的搜索、战绩和客户端采集逻辑。
+- `src/config/supabase.ts`：浏览器可用的 Supabase 项目地址和发布密钥。
+- `assets/js/app.js`：迁移期间的界面适配控制器；新业务逻辑不再放入此文件。
 - `vite.config.ts`：Vite 开发与生产构建配置。
-- `assets/js/supabase-config.js`：浏览器可用的 Supabase 项目地址和发布密钥。
 - `supabase/schema.sql`：表结构、触发器、RLS 权限和 Realtime 配置。
 - `SUPABASE_SETUP.md`：Supabase 维护与恢复说明。
 - `data/opgg-data.json`：GitHub Actions 每日生成的位置数据。
