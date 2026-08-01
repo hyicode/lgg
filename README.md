@@ -15,6 +15,7 @@
 ## 项目结构
 
 - `src/`：React + TypeScript 应用入口、Hooks、领域模型和业务模块。
+- `src/components/`：按界面职责拆分的 React 组件。
 - `src/domain/`：经过 TypeScript 严格检查的搜索、战绩和客户端采集逻辑。
 - `src/config/supabase.ts`：浏览器可用的 Supabase 项目地址和发布密钥。
 - `assets/js/app.js`：迁移期间的界面适配控制器；新业务逻辑不再放入此文件。

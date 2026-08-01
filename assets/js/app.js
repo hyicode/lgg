@@ -3760,10 +3760,7 @@ function switchView(viewId) {
   if (viewId === "adminView") renderAdmin();
 }
 
-function toggleCustomRange(prefix) {
-  const custom = $(`#${prefix}Range`).value === "custom";
-  $(`#${prefix}From`).classList.toggle("hidden", !custom);
-  $(`#${prefix}To`).classList.toggle("hidden", !custom);
+function handleDateRangeChange(prefix) {
   state.historyPage = 1;
   if (prefix === "history") renderHistory();
   else if (prefix === "adminMatch") renderAdmin();
@@ -3848,9 +3845,6 @@ function bindEvents() {
   });
   $("#playerLibraryDialog").addEventListener("close", () => {
     state.playerPickerInput = null;
-  });
-  $$("[data-close-dialog]").forEach((button) => {
-    button.addEventListener("click", () => button.closest("dialog").close());
   });
   $("#playerForm").addEventListener("submit", addPlayer);
   $("#results").addEventListener("click", (event) => {
@@ -3976,17 +3970,16 @@ function bindEvents() {
   });
   $("#historyPrev").addEventListener("click", () => { state.historyPage -= 1; renderHistory(); });
   $("#historyNext").addEventListener("click", () => { state.historyPage += 1; renderHistory(); });
-  $("#historyRange").addEventListener("change", () => toggleCustomRange("history"));
-  $("#rankRange").addEventListener("change", () => toggleCustomRange("rank"));
+  $("#historyRange").addEventListener("change", () => handleDateRangeChange("history"));
+  $("#rankRange").addEventListener("change", () => handleDateRangeChange("rank"));
   for (const id of ["historyFrom", "historyTo"]) $(`#${id}`).addEventListener("change", renderHistory);
   for (const id of ["rankFrom", "rankTo", "rankSearch", "minGames"]) $(`#${id}`).addEventListener("input", renderLeaderboard);
   // 管理页搜索和筛选
   $("#adminPlayerSearch")?.addEventListener("input", renderAdmin);
-  $("#adminMatchRange")?.addEventListener("change", () => toggleCustomRange("adminMatch"));
+  $("#adminMatchRange")?.addEventListener("change", () => handleDateRangeChange("adminMatch"));
   $("#adminMatchFrom")?.addEventListener("change", renderAdmin);
   $("#adminMatchTo")?.addEventListener("change", renderAdmin);
   $("#heroStatsBtn").addEventListener("click", () => { renderHeroStats(); $("#heroStatsDialog").showModal(); });
-  $("#heroStatsClose").addEventListener("click", () => $("#heroStatsDialog").close());
   $("#heroSearch").addEventListener("input", renderHeroStats);
   $$('[data-hero-lane]').forEach((button) => {
     button.addEventListener("click", () => changeHeroLane(button.dataset.heroLane));

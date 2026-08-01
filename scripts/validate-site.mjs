@@ -4,6 +4,9 @@ const files = [
   "index.html",
   "src/main.tsx",
   "src/App.tsx",
+  "src/components/AppHeader.tsx",
+  "src/components/AuthGate.tsx",
+  "src/components/DateRangeFilters.tsx",
   "src/hooks/useLegacyController.ts",
   "src/domain/stats.ts",
   "src/domain/search.ts",
@@ -20,7 +23,13 @@ for (const file of files) {
   if (!content.trim()) throw new Error(`${file} is empty`);
 }
 
-const appMarkup = await readFile("src/App.tsx", "utf8");
+const componentFiles = [
+  "src/App.tsx",
+  "src/components/AppHeader.tsx",
+  "src/components/AuthGate.tsx",
+  "src/components/DateRangeFilters.tsx",
+];
+const appMarkup = (await Promise.all(componentFiles.map((file) => readFile(file, "utf8")))).join("\n");
 const ids = [...appMarkup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
 ids.push("blueName", "bluePlayers", "redName", "redPlayers");
 for (const prefix of ["history", "rank", "adminMatch"]) {

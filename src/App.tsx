@@ -1,73 +1,8 @@
+import type { MouseEvent } from "react";
+import { AppHeader } from "./components/AppHeader";
+import { AuthGate } from "./components/AuthGate";
+import { DateRangeFilters } from "./components/DateRangeFilters";
 import { useLegacyController } from "./hooks/useLegacyController";
-
-function AuthGate() {
-  return (
-    <section className="auth-gate" id="authGate">
-      <div className="login-card">
-        <div className="eyebrow">League of Legends · Custom PVP</div>
-        <h1>LGG</h1>
-        <p>登录后进入天命、共享战绩与排行榜。</p>
-        <form id="loginForm">
-          <label>
-            账号
-            <input id="loginAccount" autoComplete="username" placeholder="请输入账号" required />
-          </label>
-          <label>
-            密码
-            <input id="loginPassword" type="password" autoComplete="current-password" required />
-          </label>
-          <button className="primary" id="loginBtn" type="submit">进入 LGG</button>
-        </form>
-        <div className="form-error" id="loginError" role="alert" />
-        <div className="setup-warning hidden" id="supabaseSetupWarning">
-          Supabase 尚未配置。请先填写 <code>assets/js/supabase-config.js</code>。
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function AppHeader() {
-  return (
-    <>
-      <header className="hero">
-        <div className="hero-brand">
-          <div className="eyebrow">League of Legends · Custom PVP</div>
-          <h1>LGG · 天命</h1>
-          <p>天命已定，胜负由你们共同记录。</p>
-        </div>
-        <div className="account-box">
-          <span id="accountLabel" />
-          <button className="mini" id="logoutBtn">退出</button>
-        </div>
-      </header>
-
-      <nav className="main-nav" aria-label="主功能">
-        <button className="nav-btn active" data-view="rollView">天命</button>
-        <button className="nav-btn" data-view="historyView">对局历史</button>
-        <button className="nav-btn" data-view="leaderboardView">战绩排行</button>
-        <button className="nav-btn admin-only hidden" data-view="adminView">管理</button>
-      </nav>
-
-      <div className="toolbar">
-        <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>
-        <div className="toolbar-actions">
-          <button
-            className="mini admin-only hidden test-data-toggle"
-            id="testDataModeBtn"
-            type="button"
-            aria-pressed="false"
-          >
-            测试数据：关
-          </button>
-          <button className="mini" id="localMappingsBtn">游戏 ID 映射</button>
-          <button className="mini" id="heroStatsBtn">英雄数据</button>
-          <button className="mini" id="resetBtn">清空阵容</button>
-        </div>
-      </div>
-    </>
-  );
-}
 
 function TeamSetup({ side, name }: { side: "blue" | "red"; name: string }) {
   return (
@@ -158,21 +93,6 @@ function RollView() {
       </section>
       <div className="fate-fx-layer" id="fateFxLayer" aria-hidden="true" />
     </section>
-  );
-}
-
-function DateRangeFilters({ prefix }: { prefix: "history" | "rank" | "adminMatch" }) {
-  return (
-    <>
-      <select id={`${prefix}Range`} defaultValue="all">
-        <option value="all">全部时间</option>
-        <option value="7">最近 1 周</option>
-        <option value="30">最近 30 天</option>
-        <option value="custom">自定义</option>
-      </select>
-      <input className="hidden" id={`${prefix}From`} type="date" aria-label="开始日期" />
-      <input className="hidden" id={`${prefix}To`} type="date" aria-label="结束日期" />
-    </>
   );
 }
 
@@ -308,8 +228,12 @@ function MainApplication() {
   );
 }
 
-function DialogCloseButton() {
-  return <button className="icon-btn" type="button" data-close-dialog aria-label="关闭">×</button>;
+function closeContainingDialog(event: MouseEvent<HTMLButtonElement>) {
+  event.currentTarget.closest("dialog")?.close();
+}
+
+function DialogCloseButton({ id }: { id?: string }) {
+  return <button className="icon-btn" id={id} type="button" onClick={closeContainingDialog} aria-label="关闭">×</button>;
 }
 
 function CollectorPreview() {
@@ -390,7 +314,7 @@ function RecordDialog() {
         </div>
         <div className="form-error" id="recordError" role="alert" />
         <div className="dialog-actions">
-          <button className="ghost" type="button" data-close-dialog>取消</button>
+          <button className="ghost" type="button" onClick={closeContainingDialog}>取消</button>
           <button className="primary" id="submitMatchBtn" type="submit">确认提交</button>
         </div>
       </form>
@@ -415,7 +339,7 @@ function EditMatchDialog() {
         </div>
         <div className="form-error" id="editMatchError" role="alert" />
         <div className="dialog-actions">
-          <button className="ghost" type="button" data-close-dialog>取消</button>
+          <button className="ghost" type="button" onClick={closeContainingDialog}>取消</button>
           <button className="primary" id="saveMatchBtn" type="submit">保存修改</button>
         </div>
       </form>
@@ -456,7 +380,7 @@ function HeroStatsDialog() {
     <dialog id="heroStatsDialog" className="wide-dialog">
       <div className="dialog-head">
         <h2>OPGG 英雄位置数据</h2>
-        <button className="icon-btn" id="heroStatsClose" aria-label="关闭">×</button>
+        <DialogCloseButton id="heroStatsClose" />
       </div>
       <div className="rank-tools">
         <input className="search-input" id="heroSearch" type="search" placeholder="支持中文、拼音或首字母…" />
