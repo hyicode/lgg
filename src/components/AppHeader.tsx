@@ -1,4 +1,23 @@
-export function AppHeader() {
+import type { MemberProfile } from "../auth/authState";
+import type { ViewId } from "../navigation/viewState";
+
+interface AppHeaderProps {
+  member: MemberProfile | null;
+  activeView: ViewId;
+  onNavigate(view: ViewId): void;
+  onLogout(): Promise<void>;
+}
+
+const navigationItems: ReadonlyArray<{ id: ViewId; label: string; adminOnly?: boolean }> = [
+  { id: "rollView", label: "天命" },
+  { id: "historyView", label: "对局历史" },
+  { id: "leaderboardView", label: "战绩排行" },
+  { id: "adminView", label: "管理", adminOnly: true },
+];
+
+export function AppHeader({ activeView, member, onLogout, onNavigate }: AppHeaderProps) {
+  const admin = member?.role === "admin";
+
   return (
     <>
       <header className="hero">
@@ -8,23 +27,31 @@ export function AppHeader() {
           <p>天命已定，胜负由你们共同记录。</p>
         </div>
         <div className="account-box">
-          <span id="accountLabel" />
-          <button className="mini" id="logoutBtn">退出</button>
+          <span id="accountLabel">
+            {member ? `${member.displayName || member.role} · ${admin ? "管理员" : "公共账号"}` : ""}
+          </span>
+          <button className="mini" id="logoutBtn" onClick={() => void onLogout()}>退出</button>
         </div>
       </header>
 
       <nav className="main-nav" aria-label="主功能">
-        <button className="nav-btn active" data-view="rollView">天命</button>
-        <button className="nav-btn" data-view="historyView">对局历史</button>
-        <button className="nav-btn" data-view="leaderboardView">战绩排行</button>
-        <button className="nav-btn admin-only hidden" data-view="adminView">管理</button>
+        {navigationItems.map((item) => (
+          <button
+            key={item.id}
+            className={`nav-btn${activeView === item.id ? " active" : ""}${item.adminOnly ? " admin-only" : ""}${item.adminOnly && !admin ? " hidden" : ""}`}
+            data-view={item.id}
+            onClick={() => onNavigate(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
       </nav>
 
       <div className="toolbar">
         <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>
         <div className="toolbar-actions">
           <button
-            className="mini admin-only hidden test-data-toggle"
+            className={`mini admin-only test-data-toggle${admin ? "" : " hidden"}`}
             id="testDataModeBtn"
             type="button"
             aria-pressed="false"

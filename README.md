@@ -16,9 +16,14 @@
 
 - `src/`：React + TypeScript 应用入口、Hooks、领域模型和业务模块。
 - `src/components/`：按界面职责拆分的 React 组件。
+- `src/hooks/useAuth.ts`：React 管理的登录、会话恢复和退出流程。
+- `src/auth/`：React 与迁移期控制器之间的类型化认证状态桥。
+- `src/navigation/`：受权限约束的 React 页面导航状态。
+- `src/services/`：共享的 Supabase 客户端等外部服务。
+- `src/data/`：玩家、比赛和实时共享数据的类型模型与状态桥。
 - `src/domain/`：经过 TypeScript 严格检查的搜索、战绩和客户端采集逻辑。
 - `src/config/supabase.ts`：浏览器可用的 Supabase 项目地址和发布密钥。
-- `assets/js/app.js`：迁移期间的界面适配控制器；新业务逻辑不再放入此文件。
+- `src/controllers/`：由 React 生命周期加载的功能控制器；新状态优先放入 Hooks 和领域模块。
 - `vite.config.ts`：Vite 开发与生产构建配置。
 - `supabase/schema.sql`：表结构、触发器、RLS 权限和 Realtime 配置。
 - `SUPABASE_SETUP.md`：Supabase 维护与恢复说明。

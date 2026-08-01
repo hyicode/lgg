@@ -1,6 +1,7 @@
-import { supabaseConfig, accountAliases } from "../../src/config/supabase.ts";
-import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "../../src/domain/stats.ts";
-import { createSearchForms, fuzzyMatches } from "../../src/domain/search.ts";
+// @ts-nocheck -- DOM compatibility layer; state and services are strictly typed in adjacent modules.
+import { subscribeAuthSnapshot } from "../auth/authState";
+import { comparePlayerStats, computeLeaderboards, filterMatchesByRange, asDate } from "../domain/stats";
+import { createSearchForms, fuzzyMatches } from "../domain/search";
 import {
   assignParticipantsToFixedSlots,
   championSlug,
@@ -9,8 +10,13 @@ import {
   normalizeClientPositionKey,
   normalizeClientTeam,
   riotIdFromClientPlayer,
-} from "../../src/domain/collector.ts";
-import { createClient } from "@supabase/supabase-js";
+} from "../domain/collector";
+import { getSupabaseClient } from "../services/supabaseClient";
+import { subscribeActiveView } from "../navigation/viewState";
+import {
+  requestSharedDataRefresh,
+  subscribeSharedData,
+} from "../data/sharedData";
 import { pinyin } from "pinyin-pro";
 
 const $ = (selector) => document.querySelector(selector);
@@ -33,7 +39,7 @@ let collectionRevision = 0;
 const DRAW_OPTION_IDS = ["randomTeams", "randomPositions", "randomHeroes", "uniqueHeroes", "globalBp"];
 
 const state = {
-  supabase: null,
+  supabase: getSupabaseClient(),
   user: null,
   member: null,
   players: [],
@@ -53,7 +59,6 @@ const state = {
   testDataEnabled: false,
   historyPage: 1,
   setupRestored: false,
-  realtimeChannel: null,
   riotAccounts: new Map(),
   playerStats: new Map(),
   playerPickerInput: null,
@@ -506,13 +511,6 @@ function playerById(id) {
 function playerByName(name) {
   const key = normalizeName(name);
   return state.players.find((player) => player.active && player.normalizedName === key);
-}
-
-function clearSubscriptions() {
-  if (state.supabase && state.realtimeChannel) {
-    state.supabase.removeChannel(state.realtimeChannel);
-  }
-  state.realtimeChannel = null;
 }
 
 function makePlayerInputs(side) {
@@ -3186,7 +3184,7 @@ async function batchUpdatePlayers(changes, actionLabel) {
   try {
     const { error } = await state.supabase.from("players").update(changes).in("id", ids);
     if (error) throw error;
-    await refreshPlayers();
+    await requestSharedDataRefresh();
     state.adminSelectedPlayers.clear();
     toast(`${ids.length} 名选手已${actionLabel}。`);
   } catch (error) {
@@ -3217,7 +3215,7 @@ async function batchDeleteMatches() {
   try {
     const { error } = await state.supabase.from("matches").delete().in("id", ids);
     if (error) throw error;
-    await Promise.all([refreshMatches(), loadPlayerStats()]);
+    await requestSharedDataRefresh();
     state.adminSelectedMatches.clear();
     toast(`已删除 ${ids.length} 场正式对局，战绩正在重新计算。`);
   } catch (error) {
@@ -3248,7 +3246,7 @@ async function reconcilePlayerStats() {
       compatibilityMode = !error;
     }
     if (error) throw error;
-    await Promise.all([refreshMatches(), loadPlayerStats()]);
+    await requestSharedDataRefresh();
     const after = comparePlayerStats(state.matches, state.playerStats);
     const result = data || {};
     const corrected = before.discrepancies.length;
@@ -3402,18 +3400,6 @@ function renderAllSharedData() {
   renderAdmin();
 }
 
-function mapPlayer(row) {
-  return {
-    id: row.id,
-    displayName: row.display_name,
-    normalizedName: row.normalized_name,
-    defaultCost: Number(row.default_cost),
-    active: row.active,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
 function normalizeStoredParticipantPosition(participant) {
   const storedPosition = participant?.position || participant?.lane || "";
   const normalized = normalizeClientPosition(storedPosition);
@@ -3425,53 +3411,6 @@ function normalizeStoredParticipantPosition(participant) {
   delete result.lane;
   delete result.laneLabel;
   return result;
-}
-
-function mapMatch(row) {
-  return {
-    id: row.id,
-    playedAt: row.played_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    winner: row.winner,
-    durationSeconds: row.duration_seconds,
-    note: row.note,
-    blueTeam: row.blue_team,
-    redTeam: row.red_team,
-    participants: Array.isArray(row.participants)
-      ? row.participants.map(normalizeStoredParticipantPosition)
-      : row.participants,
-  };
-}
-
-async function refreshPlayers() {
-  const { data, error } = await state.supabase
-    .from("players")
-    .select("*")
-    .order("display_name", { ascending: true });
-  if (error) {
-    toast(`选手库读取失败：${error.message}`);
-    return;
-  }
-  state.players = (data || []).map(mapPlayer);
-  restoreLocalSetup();
-  syncRosterCostsFromLibrary();
-  if ($("#playerLibraryDialog").open) renderPlayerLibrary();
-  if ($("#localMappingsDialog").open) renderLocalMappings();
-  renderAllSharedData();
-}
-
-async function refreshMatches() {
-  const { data, error } = await state.supabase
-    .from("matches")
-    .select("id,played_at,created_at,winner,duration_seconds,note,blue_team,red_team,participants")
-    .order("played_at", { ascending: false });
-  if (error) {
-    toast(`对局读取失败：${error.message}`);
-    return;
-  }
-  state.matches = (data || []).map(mapMatch);
-  renderAllSharedData();
 }
 
 // 按需加载某场对局的 participants 详情
@@ -3489,25 +3428,7 @@ async function fetchMatchDetail(matchId) {
   );
 }
 
-// loadPlayerStats 加载选手战绩汇总
-async function loadPlayerStats() {
-  const { data, error } = await state.supabase
-    .from("player_stats")
-    .select("player_id, games, wins, losses, kills, deaths, assists");
-  if (error) return;
-  state.playerStats = new Map((data || []).map(s => [s.player_id, s]));
-}
-
 // ---- riot_accounts 归一化 ----
-
-// loadRiotAccounts 加载全部 riot 账号到本地缓存
-async function loadRiotAccounts() {
-  const { data, error } = await state.supabase
-    .from("riot_accounts")
-    .select("id, account_name");
-  if (error) return;
-  state.riotAccounts = new Map((data || []).map((a) => [a.id, a.account_name]));
-}
 
 // ensureRiotAccounts 只插入缺失的 riot_accounts，绝不更新既有记录
 async function ensureRiotAccounts(participants) {
@@ -3593,168 +3514,38 @@ function resolveAccountName(p) {
   return "";
 }
 
-function startSharedListeners() {
-  clearSubscriptions();
-  refreshPlayers();
-  refreshMatches();
-  loadRiotAccounts();
-  loadPlayerStats();
-  state.realtimeChannel = state.supabase
-    .channel("lgg-shared-data")
-    .on("postgres_changes", { event: "*", schema: "public", table: "players" }, refreshPlayers)
-    .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, refreshMatches)
-    .on("postgres_changes", { event: "*", schema: "public", table: "riot_accounts" }, loadRiotAccounts)
-    .on("postgres_changes", { event: "*", schema: "public", table: "player_stats" }, loadPlayerStats)
-    .subscribe((status) => {
-      if (status === "CHANNEL_ERROR") toast("实时同步连接失败，刷新页面后会重新连接。");
-    });
+function syncSharedData(snapshot) {
+  state.players = snapshot.players;
+  state.matches = snapshot.matches;
+  state.riotAccounts = snapshot.riotAccounts;
+  state.playerStats = snapshot.playerStats;
+  if (state.players.length) {
+    restoreLocalSetup();
+    syncRosterCostsFromLibrary();
+  }
+  if ($("#playerLibraryDialog").open) renderPlayerLibrary();
+  if ($("#localMappingsDialog").open) renderLocalMappings();
+  renderAllSharedData();
 }
 
-function showAuthenticatedApp() {
-  $("#authGate").classList.add("hidden");
-  $("#app").classList.remove("hidden");
-  $("#accountLabel").textContent = `${state.member.displayName || state.member.role} · ${state.member.role === "admin" ? "管理员" : "公共账号"}`;
-  $$(".member-only").forEach((element) => element.classList.toggle("hidden", !state.member));
-  startSharedListeners();
-  loadPools();
-}
-
-async function handleAuthUser(user) {
-  if (!user) {
-    clearSubscriptions();
+function syncAuthState(snapshot) {
+  if (snapshot.status !== "authenticated") {
     state.user = null;
     state.member = null;
     state.testDataEnabled = false;
-    $("#app").classList.add("hidden");
-    $("#authGate").classList.remove("hidden");
     return;
   }
-  try {
-    const { data: profile, error: profileError } = await state.supabase
-      .from("profiles")
-      .select("id, username, display_name, role, active")
-      .eq("id", user.id)
-      .single();
-    if (profileError) throw profileError;
-    if (!profile?.active || !["admin", "member"].includes(profile.role)) {
-      throw new Error("账号尚未获得 LGG 使用权限。");
-    }
-    state.user = user;
-    state.member = {
-      username: profile.username,
-      displayName: profile.display_name,
-      role: profile.role,
-      active: profile.active,
-    };
-    $("#loginError").textContent = "";
-    showAuthenticatedApp();
-  } catch (error) {
-    $("#loginError").textContent = error.message;
-    // 仅清除本地会话，不发起网络请求（避免 403）
-    await state.supabase.auth.signOut({ scope: "local" }).catch(() => {});
+
+  const sameUser = state.user?.id === snapshot.user.id;
+  state.user = snapshot.user;
+  state.member = snapshot.member;
+  if (!sameUser) {
+    loadPools();
   }
 }
 
-async function login(event) {
-  event.preventDefault();
-  const button = $("#loginBtn");
-  const error = $("#loginError");
-  const alias = normalizeName($("#loginAccount").value);
-  const email = accountAliases[alias] || $("#loginAccount").value.trim();
-  if (!email.includes("@")) {
-    error.textContent = "账号或密码不正确。";
-    return;
-  }
-  try {
-    button.disabled = true;
-    error.textContent = "";
-    const { error: signInError } = await state.supabase.auth.signInWithPassword({
-      email,
-      password: $("#loginPassword").value,
-    });
-    if (signInError) throw signInError;
-  } catch (caught) {
-    error.textContent = caught?.message || caught?.error_description || "账号或密码不正确。";
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function initializeSupabase() {
-  const { enabled, url, publishableKey } = supabaseConfig;
-  if (!enabled || !url || !publishableKey || publishableKey.startsWith("REPLACE_WITH")) {
-    $("#supabaseSetupWarning").classList.remove("hidden");
-    $("#loginBtn").disabled = true;
-    return;
-  }
-  state.supabase = createClient(url, publishableKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: false,
-    },
-  });
-  const { data: { session }, error } = await state.supabase.auth.getSession();
-  if (error) {
-    $("#loginError").textContent = "登录状态读取失败，请刷新页面。";
-  } else {
-    await handleAuthUser(session?.user || null);
-  }
-  state.supabase.auth.onAuthStateChange((event, nextSession) => {
-    if (event === "INITIAL_SESSION") return;
-    setTimeout(() => handleAuthUser(nextSession?.user || null), 0);
-  });
-}
-
-function switchView(viewId) {
+function syncActiveView(viewId) {
   if (viewId === "adminView" && !isAdmin()) return;
-
-  const currentView = document.querySelector(".view:not(.hidden)");
-  const nextView = document.getElementById(viewId);
-  if (!nextView || nextView === currentView) return;
-
-  // 防止快速切换导致动画堆积
-  if (switchView._busy) return;
-  switchView._busy = true;
-
-  // 尊重系统"减少动效"偏好
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const duration = reducedMotion ? 0 : 160;
-
-  // 淡出当前视图
-  if (currentView) {
-    if (duration > 0) {
-      currentView.style.transition = `opacity ${duration}ms ease, transform ${duration}ms ease`;
-      currentView.style.opacity = "0";
-      currentView.style.transform = "translateY(6px)";
-    }
-    const el = currentView;
-    setTimeout(() => {
-      el.classList.add("hidden");
-      el.style.opacity = "";
-      el.style.transform = "";
-      el.style.transition = "";
-    }, duration);
-  }
-
-  // 淡入新视图
-  nextView.style.opacity = "0";
-  if (duration > 0) nextView.style.transform = "translateY(6px)";
-  nextView.classList.remove("hidden");
-  if (duration > 0) {
-    void nextView.offsetHeight;
-    nextView.style.transition = `opacity ${duration}ms ease, transform ${duration}ms ease`;
-  }
-  nextView.style.opacity = "1";
-  nextView.style.transform = "translateY(0)";
-  setTimeout(() => {
-    nextView.style.opacity = "";
-    nextView.style.transform = "";
-    nextView.style.transition = "";
-    switchView._busy = false;
-  }, duration);
-
-  $$(".nav-btn").forEach((button) => button.classList.toggle("active", button.dataset.view === viewId));
   if (viewId === "historyView") renderHistory();
   if (viewId === "leaderboardView") renderLeaderboard();
   if (viewId === "adminView") renderAdmin();
@@ -3768,22 +3559,6 @@ function handleDateRangeChange(prefix) {
 }
 
 function bindEvents() {
-  $("#loginForm").addEventListener("submit", login);
-  $("#logoutBtn").addEventListener("click", async () => {
-    const { error } = await state.supabase.auth.signOut();
-    if (error) {
-      // 远程登出失败（token 过期等），本地强制清除
-      await state.supabase.auth.signOut({ scope: "local" }).catch(() => {});
-      toast("已退出（离线模式）。");
-    }
-    clearSubscriptions();
-    state.user = null;
-    state.member = null;
-    state.testDataEnabled = false;
-    $("#app").classList.add("hidden");
-    $("#authGate").classList.remove("hidden");
-  });
-  $$(".nav-btn").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
   $("#rollBtn").addEventListener("click", roll);
   $("#testFillBtn").addEventListener("click", fillTestPlayers);
   $("#adminReconcileBtn").addEventListener("click", reconcilePlayerStats);
@@ -4002,4 +3777,6 @@ loadGlobalBpState();
 updateCostTotals();
 renderDrawOptionsStatus();
 bindEvents();
-initializeSupabase();
+subscribeAuthSnapshot(syncAuthState);
+subscribeActiveView(syncActiveView);
+subscribeSharedData(syncSharedData);

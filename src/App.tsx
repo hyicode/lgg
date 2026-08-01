@@ -2,7 +2,16 @@ import type { MouseEvent } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { AuthGate } from "./components/AuthGate";
 import { DateRangeFilters } from "./components/DateRangeFilters";
-import { useLegacyController } from "./hooks/useLegacyController";
+import { useAuth } from "./hooks/useAuth";
+import { useAppController } from "./hooks/useAppController";
+import { useViewNavigation } from "./hooks/useViewNavigation";
+import { useSharedData } from "./hooks/useSharedData";
+import type { MemberProfile } from "./auth/authState";
+import type { ViewId } from "./navigation/viewState";
+
+function viewClassName(active: boolean): string {
+  return `view${active ? "" : " hidden"}`;
+}
 
 function TeamSetup({ side, name }: { side: "blue" | "red"; name: string }) {
   return (
@@ -74,9 +83,9 @@ function ClashDivider() {
   );
 }
 
-function RollView() {
+function RollView({ active }: { active: boolean }) {
   return (
-    <section className="view" id="rollView">
+    <section className={viewClassName(active)} id="rollView">
       <section id="setupSection">
         <div className="setup">
           <TeamSetup side="blue" name="蓝方" />
@@ -96,9 +105,9 @@ function RollView() {
   );
 }
 
-function HistoryView() {
+function HistoryView({ active }: { active: boolean }) {
   return (
-    <section className="view hidden" id="historyView">
+    <section className={viewClassName(active)} id="historyView">
       <div className="section-head">
         <div><h2>对局历史</h2><p>仅手动提交的比赛会出现在这里。</p></div>
         <div className="filters">
@@ -116,9 +125,9 @@ function HistoryView() {
   );
 }
 
-function LeaderboardView() {
+function LeaderboardView({ active }: { active: boolean }) {
   return (
-    <section className="view hidden" id="leaderboardView">
+    <section className={viewClassName(active)} id="leaderboardView">
       <div className="section-head">
         <div><h2>共享战绩</h2><p>按正式提交的对局实时计算。</p></div>
         <div className="filters"><DateRangeFilters prefix="rank" /></div>
@@ -152,9 +161,9 @@ function LeaderboardView() {
   );
 }
 
-function AdminView() {
+function AdminView({ active }: { active: boolean }) {
   return (
-    <section className="view hidden" id="adminView">
+    <section className={viewClassName(active)} id="adminView">
       <div className="section-head">
         <div><h2>管理员控制台</h2><p>维护共享选手库并修正正式比赛。</p></div>
         <div className="admin-head-actions admin-only hidden">
@@ -216,14 +225,26 @@ function AdminView() {
   );
 }
 
-function MainApplication() {
+function MainApplication({
+  hidden,
+  member,
+  activeView,
+  onNavigate,
+  onLogout,
+}: {
+  hidden: boolean;
+  member: MemberProfile | null;
+  activeView: ViewId;
+  onNavigate(view: ViewId): void;
+  onLogout(): Promise<void>;
+}) {
   return (
-    <main className="app hidden" id="app">
-      <AppHeader />
-      <RollView />
-      <HistoryView />
-      <LeaderboardView />
-      <AdminView />
+    <main className={`app${hidden ? " hidden" : ""}`} id="app">
+      <AppHeader activeView={activeView} member={member} onLogout={onLogout} onNavigate={onNavigate} />
+      <RollView active={activeView === "rollView"} />
+      <HistoryView active={activeView === "historyView"} />
+      <LeaderboardView active={activeView === "leaderboardView"} />
+      <AdminView active={activeView === "adminView"} />
     </main>
   );
 }
@@ -523,17 +544,36 @@ function Dialogs() {
 }
 
 export default function App() {
-  const controllerError = useLegacyController();
+  const auth = useAuth();
+  const controllerError = useAppController();
+  const authenticated = auth.snapshot.status === "authenticated";
+  const navigation = useViewNavigation(auth.snapshot.member?.role === "admin");
+  const sharedData = useSharedData(authenticated);
 
   return (
     <>
-      <AuthGate />
-      <MainApplication />
+      <AuthGate
+        configured={auth.configured}
+        error={auth.snapshot.error}
+        hidden={authenticated}
+        loading={auth.snapshot.status === "loading" || auth.submitting}
+        onLogin={auth.login}
+      />
+      <MainApplication
+        activeView={navigation.activeView}
+        hidden={!authenticated}
+        member={auth.snapshot.member}
+        onNavigate={navigation.navigate}
+        onLogout={auth.logout}
+      />
       <Dialogs />
       {controllerError ? (
         <div className="form-error controller-error" role="alert">
           应用初始化失败，请刷新页面后重试。
         </div>
+      ) : null}
+      {sharedData.error ? (
+        <div className="form-error controller-error" role="alert">{sharedData.error}</div>
       ) : null}
     </>
   );
