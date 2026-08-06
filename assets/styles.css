@@ -1549,6 +1549,39 @@ textarea:focus {
   font-size: 10px;
 }
 
+.roster-reroll-btn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(244, 213, 141, 0.22);
+  border-radius: 50%;
+  color: rgba(244, 213, 141, 0.55);
+  background: rgba(0, 0, 0, 0.5);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
+  user-select: none;
+}
+
+.roster-card-row.has-roll-result:hover .roster-reroll-btn,
+.roster-reroll-btn:focus-visible {
+  opacity: 1;
+}
+
+.roster-reroll-btn:hover {
+  background: rgba(244, 213, 141, 0.18);
+  color: #f4d58d;
+  border-color: rgba(244, 213, 141, 0.5);
+}
+
 .badge {
   position: absolute;
   top: 12px;

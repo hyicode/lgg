@@ -582,6 +582,7 @@ function makePlayerInputs(side) {
               </span>
               <span class="roster-card-result">
                 <img data-result-image alt="">
+                <span class="roster-reroll-btn" role="button" tabindex="0" data-reroll="" aria-label="重新随机英雄" title="重新随机英雄">↻</span>
                 <span class="roster-result-lane" data-result-lane></span>
                 <span class="roster-result-champion" data-result-champion></span>
                 <strong class="roster-result-player" data-result-player></strong>
@@ -1464,6 +1465,8 @@ function fillRosterResult(result, index) {
   row.classList.remove("soul-extracting", "soul-restored");
   row.dataset.resultIndex = String(index);
   row.classList.add("has-roll-result");
+  const rerollBtn = row.querySelector("[data-reroll]");
+  if (rerollBtn) rerollBtn.dataset.reroll = String(index);
   if (hasChampion) image.addEventListener("error", () => { image.src = avatar(champion); }, { once: true });
   requestAnimationFrame(() => row.classList.remove("is-drawing"));
 }
@@ -1640,21 +1643,26 @@ function revealAll() {
 }
 
 function rerollHero(index) {
-  if (state.submitted) return;
+  if (state.submitted || state._rerolling) return;
   const result = state.results[index];
   if (!result?.champion?.slug) return;
-  const blocked = new Set([
-    result.champion.slug,
-    ...state.bans.map((hero) => hero.slug),
-    ...($("#globalBp").checked ? state.globalBpUsed : []),
-  ]);
-  if ($("#uniqueHeroes").checked) state.results.forEach((item, itemIndex) => itemIndex !== index && blocked.add(item.champion.slug));
-  const candidates = state.pools[result.position].filter((hero) => !blocked.has(hero.slug));
-  if (!candidates.length) return toast(`${result.positionLabel}没有可用的新英雄。`);
-  result.champion = weightedChoice(candidates);
-  state.collectedMatch = null;
-  state.matchedParticipants = new Map();
-  fillRosterResult(result, index);
+  state._rerolling = true;
+  try {
+    const blocked = new Set([
+      result.champion.slug,
+      ...state.bans.map((hero) => hero.slug),
+      ...($("#globalBp").checked ? state.globalBpUsed : []),
+    ]);
+    if ($("#uniqueHeroes").checked) state.results.forEach((item, itemIndex) => itemIndex !== index && blocked.add(item.champion.slug));
+    const candidates = state.pools[result.position].filter((hero) => !blocked.has(hero.slug));
+    if (!candidates.length) return toast(`${result.positionLabel}没有可用的新英雄。`);
+    result.champion = weightedChoice(candidates);
+    state.collectedMatch = null;
+    state.matchedParticipants = new Map();
+    fillRosterResult(result, index);
+  } finally {
+    state._rerolling = false;
+  }
 }
 
 function backToSetup() {
@@ -3668,9 +3676,16 @@ $("#resetMappingsBtn")?.addEventListener("click", resetMappings);
   $("#playerForm").addEventListener("submit", addPlayer);
   $("#results").addEventListener("click", (event) => {
     const button = event.target.closest("[data-reroll]");
-    if (button) rerollHero(Number(button.dataset.reroll));
+    if (button && button.dataset.reroll) rerollHero(Number(button.dataset.reroll));
   });
   document.addEventListener("click", (event) => {
+    const rerollBtn = event.target.closest("[data-reroll]");
+    if (rerollBtn && rerollBtn.dataset.reroll) {
+      event.preventDefault();
+      event.stopPropagation();
+      rerollHero(Number(rerollBtn.dataset.reroll));
+      return;
+    }
     const costControl = event.target.closest("[data-temp-cost-step], [data-temp-cost-reset]");
     if (costControl) {
       event.preventDefault();
