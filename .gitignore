@@ -1,6 +1,22 @@
-collector/config.json
+# Local configuration and logs
 .collector-bridge*.log
 .local-web*.log
 .idea/
+
+# JavaScript dependencies and Vite output
 node_modules/
 dist/
+*.tsbuildinfo
+
+# Legacy root-level deployment output. The current Pages workflow publishes dist/.
+/assets/*.js
+/assets/*.js.map
+/assets/index-*.css
+/assets/lol-positions/
+/collector/
+
+# Go collector build and release output
+/collector-go/*.exe
+/collector-go/*.exe~
+/collector-go/dist/
+/public/collector/*.exe

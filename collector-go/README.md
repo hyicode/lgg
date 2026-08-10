@@ -20,7 +20,8 @@ Go 程序只做三件事：
 - `lggcollector://` 协议启动器
 - 手动启动脚本
 
-安装器和网页分发文件位于 `public/collector/`。
+安装脚本位于 `public/collector/`。Windows EXE 不提交到 Git；GitHub Actions 会先在
+`windows-latest` 上测试并构建它，再将它放入 Pages 的 `public/collector/` 发布目录。
 
 ## 构建
 
@@ -34,6 +35,9 @@ build.cmd
 ```cmd
 release.cmd
 ```
+
+本地生成的 `collector-go/*.exe`、`collector-go/dist/` 和
+`public/collector/*.exe` 均已忽略，不应提交。
 
 ## 接口
 

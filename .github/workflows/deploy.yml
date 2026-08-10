@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -10,17 +10,49 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build-collector:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: collector-go/go.mod
+          cache-dependency-path: collector-go/go.mod
+
+      - name: Test collector
+        run: go -C collector-go test ./...
+
+      - name: Build Windows collector
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = "0"
+          go -C collector-go build -trimpath -ldflags="-s -w" -o ../public/collector/lgg-collector.exe .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lgg-collector-windows
+          path: public/collector/lgg-collector.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  build-site:
+    needs: build-collector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: lgg-collector-windows
+          path: public/collector
+
+      - name: Verify collector artifact
+        run: test -s public/collector/lgg-collector.exe
 
       - uses: pnpm/action-setup@v4
         with:
@@ -32,13 +64,23 @@ jobs:
 
       - run: pnpm install --no-frozen-lockfile
 
-      - run: pnpm build
+      - run: pnpm check
 
       - uses: actions/configure-pages@v4
+        if: github.ref == 'refs/heads/main'
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
         with:
           path: dist
 
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build-site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4

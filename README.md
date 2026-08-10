@@ -30,6 +30,7 @@
 - `data/opgg-data.json`：GitHub Actions 每日生成的位置数据。
 - `scripts/update-opgg.mjs`：OPGG 数据抓取器。
 - `collector-go/`：唯一保留的 Windows Go 本机代理，只转发 LOL 客户端接口；对局解析和确认由浏览器完成。
+- `.github/workflows/deploy.yml`：在 Windows Runner 测试并构建采集器；`dev` 仅验证，`main` 验证通过后发布 Pages。
 
 ## 对局采集器
 
