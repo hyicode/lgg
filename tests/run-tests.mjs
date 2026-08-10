@@ -5,3 +5,4 @@ import "./security.test.mjs";
 import "./auth.test.mjs";
 import "./navigation.test.mjs";
 import "./shared-data.test.mjs";
+import "./draft.test.mjs";

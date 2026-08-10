@@ -21,6 +21,14 @@ export function AppHeader({ activeView, member, onLogout, onNavigate }: AppHeade
   return (
     <>
       <header className="hero">
+        <div className={`header-rule-picker${activeView === "rollView" ? "" : " hidden"}`} id="ruleModeSwitcher" aria-label="天命规则">
+          <span>天命规则</span>
+          <div className="header-rule-buttons" role="group" aria-label="选择天命规则">
+            <button type="button" className="active" data-rule-mode="classic" aria-pressed="true">经典</button>
+            <button type="button" data-rule-mode="draft-first" aria-pressed="false">阵容先行</button>
+          </div>
+          <small id="activeRuleDescription">先随机选手队伍与位置，再抽取英雄。</small>
+        </div>
         <div className="hero-brand">
           <div className="eyebrow">League of Legends · Custom PVP</div>
           <h1>LGG · 天命</h1>

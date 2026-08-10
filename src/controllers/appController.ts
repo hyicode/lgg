@@ -17,6 +17,7 @@ import {
   requestSharedDataRefresh,
   subscribeSharedData,
 } from "../data/sharedData";
+import { bindDraftChampions } from "../domain/draft";
 import { pinyin } from "pinyin-pro";
 
 const $ = (selector) => document.querySelector(selector);
@@ -37,6 +38,10 @@ let championIdMap = null; // { championId: { name, alias } }
 let draggedCollectedResultIdx = -1;
 let collectionRevision = 0;
 const DRAW_OPTION_IDS = ["randomTeams", "randomPositions", "randomHeroes", "uniqueHeroes", "globalBp"];
+const RULE_MODES = {
+  CLASSIC: "classic",
+  DRAFT_FIRST: "draft-first",
+};
 
 const state = {
   supabase: getSupabaseClient(),
@@ -74,6 +79,10 @@ const state = {
   heroStatsSortDirection: "desc",
   batchImportQueue: [],
   batchImportIndex: 0,
+  ruleMode: RULE_MODES.CLASSIC,
+  draftFirstPhase: "setup",
+  classicRandomHeroesOption: true,
+  rerollingHeroIndexes: new Set(),
 };
 
 function escapeHtml(value = "") {
@@ -232,10 +241,64 @@ function renderDrawOptionsStatus() {
 function setDrawOptionsLocked(locked) {
   DRAW_OPTION_IDS.forEach((id) => {
     const input = $(`#${id}`);
-    if (input) input.disabled = locked;
+    if (input) input.disabled = locked || (state.ruleMode === RULE_MODES.DRAFT_FIRST && id === "randomHeroes");
   });
   $(".draw-options-panel")?.classList.toggle("is-locked", locked);
   renderDrawOptionsStatus();
+}
+
+function renderRuleMode() {
+  const draftFirst = state.ruleMode === RULE_MODES.DRAFT_FIRST;
+  const previewingHeroes = draftFirst && state.draftFirstPhase === "heroes";
+  const assigned = draftFirst && state.draftFirstPhase === "assigned";
+  const workspace = $("#ruleWorkspace");
+  workspace?.classList.toggle("mode-draft-first", draftFirst);
+  workspace?.classList.toggle("is-draft-preview", previewingHeroes);
+  workspace?.classList.toggle("is-draft-assigned", assigned);
+
+  const description = $("#activeRuleDescription");
+  if (description) {
+    description.textContent = previewingHeroes
+      ? "英雄阵容已生成。可单独或整套重抽，确认后才会随机分配选手。"
+      : assigned
+        ? "选手已分配；可重新随机选手，也可单独重抽某个英雄。"
+        : draftFirst
+          ? "先生成并确认双方英雄阵容，再随机分配选手队伍与位置。"
+          : "先随机选手队伍与位置，再抽取英雄并揭晓全部结果。";
+  }
+
+  const rollButton = $("#rollBtn");
+  if (rollButton) rollButton.textContent = draftFirst ? "生成英雄阵容" : "开启天命！";
+  const againButton = $("#againBtn");
+  if (againButton) againButton.textContent = previewingHeroes ? "重抽全部" : draftFirst ? "再启阵容" : "再启天命";
+  const backButton = $("#backBtn");
+  if (backButton) backButton.textContent = previewingHeroes ? "返回调整" : "调整阵容";
+
+  const randomHeroes = $("#randomHeroes");
+  if (draftFirst && randomHeroes) randomHeroes.checked = true;
+  $$('[data-rule-mode]').forEach((button) => {
+    const active = button.dataset.ruleMode === state.ruleMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function selectRuleMode(mode) {
+  if (!Object.values(RULE_MODES).includes(mode)) return;
+  if (state.busy) return toast("天命正在揭晓，请稍候再切换规则。");
+  if (mode === state.ruleMode) return;
+  if (state.ruleMode === RULE_MODES.CLASSIC) {
+    state.classicRandomHeroesOption = $("#randomHeroes").checked;
+  }
+  backToSetup();
+  state.ruleMode = mode;
+  state.draftFirstPhase = "setup";
+  if (mode === RULE_MODES.CLASSIC) {
+    $("#randomHeroes").checked = state.classicRandomHeroesOption;
+  }
+  renderRuleMode();
+  setDrawOptionsLocked(false);
+  saveLocalSetup();
 }
 
 function globalBpHeroDetails() {
@@ -636,8 +699,20 @@ function makePlayerInputs(side) {
               </span>
             </span>
             <span class="roster-card-face roster-card-back" aria-hidden="true">
-              <strong>?</strong>
-              <small>天命待揭</small>
+              <span class="roster-card-back-placeholder">
+                <strong>?</strong>
+                <small>天命待揭</small>
+              </span>
+              <span class="roster-card-result roster-card-result-back">
+                <img data-result-image alt="">
+                <span class="roster-result-lane" data-result-lane></span>
+                <span class="roster-result-champion" data-result-champion></span>
+                <strong class="roster-result-player" data-result-player></strong>
+                <span class="roster-result-rate" data-result-rate>
+                  <span data-result-pick-rate></span>
+                  <span data-result-win-rate></span>
+                </span>
+              </span>
             </span>
           </span>
         </button>
@@ -934,12 +1009,16 @@ function syncRosterCostsFromLibrary() {
 
 function saveLocalSetup() {
   try {
+    const drawOptions = Object.fromEntries(DRAW_OPTION_IDS.map((id) => [id, Boolean($(`#${id}`)?.checked)]));
+    if (state.ruleMode === RULE_MODES.DRAFT_FIRST) {
+      drawOptions.randomHeroes = state.classicRandomHeroesOption;
+    }
     localStorage.setItem("lgg-setup-v3", JSON.stringify({
       blueName: $("#blueName").value,
       redName: $("#redName").value,
       blue: lineup("blue"),
       red: lineup("red"),
-      drawOptions: Object.fromEntries(DRAW_OPTION_IDS.map((id) => [id, Boolean($(`#${id}`)?.checked)])),
+      drawOptions,
     }));
   } catch {
     // 本机偏好保存失败不影响主流程。
@@ -974,6 +1053,9 @@ function restoreLocalSetup() {
       if (typeof saved.drawOptions?.[id] === "boolean") $(`#${id}`).checked = saved.drawOptions[id];
     }
     if (!saved.drawOptions && typeof saved.unique === "boolean") $("#uniqueHeroes").checked = saved.unique;
+    state.classicRandomHeroesOption = $("#randomHeroes").checked;
+    renderRuleMode();
+    setDrawOptionsLocked($("#setupSection").classList.contains("roll-active"));
     updateCostTotals();
     renderDrawOptionsStatus();
     state.setupRestored = true;
@@ -1412,7 +1494,279 @@ function withoutRandomHeroes(items) {
   }));
 }
 
+function fillHeroDraftPreview(result, index, faces) {
+  fillRosterResult(result, index, faces);
+  const row = rosterRowForResult(result);
+  if (!row) return;
+  const targets = faces || row.querySelectorAll(".roster-card-face");
+  targets.forEach((face) => {
+    face.querySelector("[data-result-player]").textContent = "选手待揭晓";
+  });
+  const reroll = row.querySelector("[data-reroll]");
+  if (reroll) {
+    reroll.setAttribute("aria-label", `重新随机${result.positionLabel}英雄`);
+    reroll.title = `重新随机${result.positionLabel}英雄`;
+  }
+}
+
+function heroDraftRevealGroups() {
+  return LANES.map(([position]) => ["blue", "red"]
+    .map((team) => state.results.findIndex((result) => result.team === team && result.position === position))
+    .filter((index) => index >= 0));
+}
+
+function heroDrawFrames(result, teaserCount = 4) {
+  const candidates = (state.pools?.[result.position] || [])
+    .filter((hero) => hero.slug !== result.champion.slug);
+  const teasers = [];
+  while (teasers.length < teaserCount && candidates.length) {
+    const chosen = weightedChoice(candidates);
+    teasers.push(chosen);
+    candidates.splice(candidates.findIndex((hero) => hero.slug === chosen.slug), 1);
+  }
+  return [...teasers, result.champion];
+}
+
+function fillHeroAnimationFrame(result, index, champion, draftPreview, faces) {
+  const frame = { ...result, champion };
+  if (draftPreview) fillHeroDraftPreview(frame, index, faces);
+  else fillRosterResult(frame, index, faces);
+}
+
+async function animateHeroCardDraw(result, index, { draftPreview = false } = {}) {
+  const row = rosterRowForResult(result);
+  if (!row) return;
+  const frames = heroDrawFrames(result);
+  const preloaders = frames.map((champion) => {
+    const image = new Image();
+    image.src = portrait(champion);
+    return image;
+  });
+  const valid = () => state.results[index] === result && !state.submitted;
+  row.classList.remove("is-drawing");
+  row.classList.add("hero-card-cycling");
+  row.setAttribute("aria-busy", "true");
+  try {
+    fillHeroAnimationFrame(result, index, frames[0], draftPreview);
+    row.style.setProperty("--hero-axis-angle", "0deg");
+    void row.offsetWidth;
+    for (let frameIndex = 1; frameIndex < frames.length; frameIndex += 1) {
+      if (!valid()) return;
+      const progress = frames.length <= 1 ? 1 : frameIndex / (frames.length - 1);
+      const spinDuration = Math.round(150 + 410 * (progress ** 1.55));
+      const holdDuration = Math.round(30 + 190 * (progress ** 2));
+      const incomingFace = row.querySelector(frameIndex % 2 === 1
+        ? ".roster-card-back"
+        : ".roster-card-front");
+      fillHeroAnimationFrame(result, index, frames[frameIndex], draftPreview, [incomingFace]);
+      row.classList.toggle("hero-final-frame", frameIndex === frames.length - 1);
+      row.style.setProperty("--hero-spin-duration", `${spinDuration}ms`);
+      row.style.setProperty("--hero-axis-angle", `${frameIndex * 180}deg`);
+      await waitForFate(spinDuration + holdDuration);
+    }
+  } finally {
+    void preloaders;
+    row.classList.add("hero-axis-reset");
+    row.classList.remove("hero-card-cycling", "hero-final-frame", "is-drawing");
+    row.style.removeProperty("--hero-spin-duration");
+    row.style.removeProperty("--hero-axis-angle");
+    void row.offsetWidth;
+    row.classList.remove("hero-axis-reset");
+    row.removeAttribute("aria-busy");
+  }
+}
+
+async function runHeroDraftFlip(sequence) {
+  const setup = $("#setupSection");
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const groups = heroDraftRevealGroups();
+
+  if (reducedMotion) {
+    groups.flat().forEach((index) => fillHeroDraftPreview(state.results[index], index));
+  } else {
+    const animations = [];
+    await waitForFate(145);
+    for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+      const group = groups[groupIndex];
+      if (sequence !== state.fateSequence || state.draftFirstPhase !== "heroes") return;
+      group.forEach((index) => {
+        animations.push(animateHeroCardDraw(state.results[index], index, {
+          draftPreview: true,
+        }));
+      });
+      if (groupIndex < groups.length - 1) {
+        const progress = groupIndex / Math.max(1, groups.length - 2);
+        await waitForFate(Math.round(70 + 170 * (progress ** 1.7)));
+      }
+    }
+    await Promise.all(animations);
+    await waitForFate(120);
+  }
+
+  if (sequence !== state.fateSequence || state.draftFirstPhase !== "heroes") return;
+  setup.classList.remove("draft-fast-flip");
+  $$(".roster-card-row").forEach((row) => row.classList.remove("is-drawing"));
+  state.busy = false;
+  $("#confirmDraftBtn").disabled = false;
+  $("#backBtn").disabled = false;
+  $("#againBtn").disabled = false;
+}
+
+function renderHeroDraftPreview() {
+  renderBans();
+  $("#results").innerHTML = "";
+  const setup = $("#setupSection");
+  const sequence = ++state.fateSequence;
+  state.busy = true;
+  setup.classList.add("roll-active", "draft-preview", "draft-fast-flip");
+  setup.classList.remove("draft-confirmed");
+  setDrawOptionsLocked(true);
+  $$(".roster-card-row").forEach((row) => {
+    row.classList.remove("is-drawing", "has-roll-result");
+  });
+  $("#rollBtn").classList.add("hidden");
+  $("#confirmDraftBtn").classList.remove("hidden");
+  $("#backBtn").classList.remove("hidden");
+  $("#confirmDraftBtn").disabled = true;
+  $("#backBtn").disabled = true;
+  $("#revealBtn").classList.add("hidden");
+  $("#recordBtn").classList.add("hidden");
+  $("#rerollPlayersBtn").classList.add("hidden");
+  $("#againBtn").classList.remove("hidden");
+  $("#againBtn").disabled = true;
+  renderRuleMode();
+  requestAnimationFrame(() => requestAnimationFrame(() => runHeroDraftFlip(sequence)));
+}
+
+function rollDraftFirst() {
+  if (!validateSetup()) return;
+  backToSetup();
+  if ($("#globalBp").checked) ensureGlobalBpRoster();
+  saveLocalSetup();
+  try {
+    const blue = assignTeam(lineup("blue"), "blue");
+    const red = assignTeam(lineup("red"), "red");
+    state.bans = [];
+    state.results = pickHeroes(
+      [...blue, ...red],
+      $("#uniqueHeroes").checked,
+      $("#globalBp").checked ? new Set(state.globalBpUsed) : new Set(),
+    );
+    state.order = [];
+    state.revealed = 0;
+    state.draftId = crypto.randomUUID();
+    state.submitted = false;
+    state.collectedMatch = null;
+    state.matchedParticipants = new Map();
+    state.globalBpCommittedDraftId = null;
+    state.draftFirstPhase = "heroes";
+    $("#rollError").textContent = "";
+    renderHeroDraftPreview();
+  } catch (error) {
+    $("#rollError").textContent = error.message;
+  }
+}
+
+function lineupAssignmentKey(blue, red) {
+  return [...blue, ...red].map((player) => player.id).join("|");
+}
+
+function randomizedDraftPlayerSlots(avoidCurrent = false) {
+  const currentBlue = lineup("blue");
+  const currentRed = lineup("red");
+  const currentKey = lineupAssignmentKey(currentBlue, currentRed);
+  const randomTeams = $("#randomTeams").checked;
+  const randomPositions = $("#randomPositions").checked;
+  let nextBlue = currentBlue;
+  let nextRed = currentRed;
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    if (randomTeams) {
+      const players = shuffle([...currentBlue, ...currentRed]);
+      nextBlue = players.slice(0, 5);
+      nextRed = players.slice(5);
+    } else {
+      nextBlue = [...currentBlue];
+      nextRed = [...currentRed];
+    }
+    if (randomPositions) {
+      nextBlue = shuffle(nextBlue);
+      nextRed = shuffle(nextRed);
+    }
+    if (!avoidCurrent || lineupAssignmentKey(nextBlue, nextRed) !== currentKey) break;
+  }
+
+  if (avoidCurrent && lineupAssignmentKey(nextBlue, nextRed) === currentKey) return null;
+  setLineup("blue", nextBlue);
+  setLineup("red", nextRed);
+  return [
+    ...assignTeam(lineup("blue"), "blue"),
+    ...assignTeam(lineup("red"), "red"),
+  ];
+}
+
+function confirmHeroDraft() {
+  if (state.ruleMode !== RULE_MODES.DRAFT_FIRST || state.draftFirstPhase !== "heroes") return;
+  if (state.results.length !== 10 || state.results.some((result) => !result.champion?.slug)) {
+    $("#rollError").textContent = "英雄阵容尚未完整生成。";
+    return;
+  }
+  try {
+    const heroDraft = state.results.map((result) => ({
+      team: result.team,
+      position: result.position,
+      champion: result.champion,
+    }));
+    const playerSlots = randomizedDraftPlayerSlots();
+    state.results = bindDraftChampions(playerSlots, heroDraft);
+    state.order = rosterRevealOrder();
+    state.revealed = 0;
+    state.collectedMatch = null;
+    state.matchedParticipants = new Map();
+    state.draftFirstPhase = "assigned";
+    $("#rollError").textContent = "";
+    $("#setupSection").classList.remove("draft-preview");
+    $("#setupSection").classList.add("draft-confirmed");
+    renderRoll();
+    renderRuleMode();
+    requestAnimationFrame(() => requestAnimationFrame(runFateSequence));
+  } catch (error) {
+    $("#rollError").textContent = error.message;
+  }
+}
+
+function rerollDraftPlayers() {
+  if (state.ruleMode !== RULE_MODES.DRAFT_FIRST || state.draftFirstPhase !== "assigned" || state.submitted) return;
+  if (state.busy) return toast("天命正在揭晓，请稍候再随机选手。");
+  if (!$("#randomTeams").checked && !$("#randomPositions").checked) {
+    return toast("请先返回调整，并开启随机分队或随机位置。");
+  }
+  try {
+    const heroDraft = state.results.map((result) => ({
+      team: result.team,
+      position: result.position,
+      champion: result.champion,
+    }));
+    const playerSlots = randomizedDraftPlayerSlots(true);
+    if (!playerSlots) return toast("本次选手分配没有变化，请再试一次。");
+    state.results = bindDraftChampions(playerSlots, heroDraft);
+    state.order = rosterRevealOrder();
+    state.revealed = 0;
+    state.draftId = crypto.randomUUID();
+    state.collectedMatch = null;
+    state.matchedParticipants = new Map();
+    state.globalBpCommittedDraftId = null;
+    $("#rollError").textContent = "";
+    renderRoll();
+    renderRuleMode();
+    requestAnimationFrame(() => requestAnimationFrame(runFateSequence));
+  } catch (error) {
+    $("#rollError").textContent = error.message;
+  }
+}
+
 function roll() {
+  if (state.ruleMode === RULE_MODES.DRAFT_FIRST) return rollDraftFirst();
   if (!validateSetup()) return;
   if ($("#randomTeams").checked) randomizeTeams();
   if ($("#randomPositions").checked) randomizeTeamPositions();
@@ -1459,12 +1813,14 @@ function renderRoll() {
     row.classList.add("is-drawing");
   });
   $("#rollBtn").classList.add("hidden");
+  $("#confirmDraftBtn").classList.add("hidden");
   $("#backBtn").classList.remove("hidden");
   $("#backBtn").disabled = true;
   $("#revealBtn").classList.add("hidden");
   $("#recordBtn").classList.add("hidden");
   $("#recordBtn").disabled = false;
   $("#recordBtn").textContent = "记录本局";
+  $("#rerollPlayersBtn").classList.add("hidden");
   $("#againBtn").classList.add("hidden");
 }
 
@@ -1484,33 +1840,42 @@ function rosterRowForResult(result) {
   return $$(".roster-card-row").find((row) => row.querySelector(".player-name")?.dataset.playerId === result.player.id);
 }
 
-function fillRosterResult(result, index) {
+function fillRosterResult(result, index, faces) {
   const champion = result.champion;
   const row = rosterRowForResult(result);
   if (!row) return;
-  const image = row.querySelector("[data-result-image]");
   const hasChampion = Boolean(champion?.slug);
-  image.hidden = !hasChampion;
-  image.alt = hasChampion ? champion.name : "";
-  if (hasChampion) image.src = portrait(champion);
-  row.querySelector("[data-result-lane]").innerHTML = positionIconMarkup(result.position, "result-position-icon");
-  row.querySelector("[data-result-champion]").textContent = hasChampion ? champion.name : "英雄自选";
-  const rate = row.querySelector("[data-result-rate]");
-  rate.hidden = !hasChampion;
-  rate.querySelector("[data-result-pick-rate]").textContent = hasChampion
-    ? `登场率：${formatNumber(champion.weight, 2)}%`
-    : "";
-  rate.querySelector("[data-result-win-rate]").textContent = hasChampion
-    ? `胜率：${formatNumber(champion.winRate, 2)}%`
-    : "";
-  row.querySelector("[data-result-player]").textContent = result.player.name;
+  const targets = faces || row.querySelectorAll(".roster-card-face");
+  targets.forEach((face) => {
+    const image = face.querySelector("[data-result-image]");
+    image.hidden = !hasChampion;
+    image.alt = hasChampion ? champion.name : "";
+    image.onerror = null;
+    if (hasChampion) {
+      image.onerror = () => {
+        image.onerror = null;
+        image.src = avatar(champion);
+      };
+      image.src = portrait(champion);
+    }
+    face.querySelector("[data-result-lane]").innerHTML = positionIconMarkup(result.position, "result-position-icon");
+    face.querySelector("[data-result-champion]").textContent = hasChampion ? champion.name : "英雄自选";
+    const rate = face.querySelector("[data-result-rate]");
+    rate.hidden = !hasChampion;
+    rate.querySelector("[data-result-pick-rate]").textContent = hasChampion
+      ? `登场率：${formatNumber(champion.weight, 2)}%`
+      : "";
+    rate.querySelector("[data-result-win-rate]").textContent = hasChampion
+      ? `胜率：${formatNumber(champion.winRate, 2)}%`
+      : "";
+    face.querySelector("[data-result-player]").textContent = result.player.name;
+  });
   row.classList.toggle("hero-self-pick", !hasChampion);
   row.classList.remove("soul-extracting", "soul-restored");
   row.dataset.resultIndex = String(index);
   row.classList.add("has-roll-result");
   const rerollBtn = row.querySelector("[data-reroll]");
   if (rerollBtn) rerollBtn.dataset.reroll = String(index);
-  if (hasChampion) image.addEventListener("error", () => { image.src = avatar(champion); }, { once: true });
   requestAnimationFrame(() => row.classList.remove("is-drawing"));
 }
 
@@ -1544,6 +1909,10 @@ function finishReveal() {
   $("#revealBtn").disabled = false;
   $("#backBtn").disabled = false;
   $("#recordBtn").classList.remove("hidden");
+  $("#rerollPlayersBtn").classList.toggle(
+    "hidden",
+    state.ruleMode !== RULE_MODES.DRAFT_FIRST || state.draftFirstPhase !== "assigned" || state.submitted,
+  );
   $("#againBtn").classList.remove("hidden");
 }
 
@@ -1685,11 +2054,26 @@ function revealAll() {
   runFateSequence();
 }
 
-function rerollHero(index) {
-  if (state.submitted || state._rerolling) return;
+async function animateHeroReroll(result, index) {
+  const draftPreview = state.ruleMode === RULE_MODES.DRAFT_FIRST && state.draftFirstPhase === "heroes";
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    fillHeroAnimationFrame(result, index, result.champion, draftPreview);
+    return;
+  }
+  await animateHeroCardDraw(result, index, { draftPreview });
+}
+
+async function rerollHero(index) {
+  if (state.submitted || state.busy || state.rerollingHeroIndexes.size > 0) return;
   const result = state.results[index];
   if (!result?.champion?.slug) return;
-  state._rerolling = true;
+  const controls = ["confirmDraftBtn", "backBtn", "recordBtn", "rerollPlayersBtn", "againBtn"]
+    .map((id) => $(`#${id}`))
+    .filter(Boolean);
+  const controlStates = controls.map((control) => [control, control.disabled]);
+  state.rerollingHeroIndexes.add(index);
+  state.busy = true;
+  controls.forEach((control) => { control.disabled = true; });
   try {
     const blocked = new Set([
       result.champion.slug,
@@ -1702,9 +2086,11 @@ function rerollHero(index) {
     result.champion = weightedChoice(candidates);
     state.collectedMatch = null;
     state.matchedParticipants = new Map();
-    fillRosterResult(result, index);
+    await animateHeroReroll(result, index);
   } finally {
-    state._rerolling = false;
+    state.rerollingHeroIndexes.delete(index);
+    state.busy = false;
+    controlStates.forEach(([control, disabled]) => { control.disabled = disabled; });
   }
 }
 
@@ -1712,17 +2098,32 @@ function backToSetup() {
   state.fateSequence += 1;
   state.busy = false;
   cleanupFateFx();
-  $("#setupSection").classList.remove("roll-active");
+  $("#setupSection").classList.remove("roll-active", "draft-preview", "draft-confirmed", "draft-fast-flip");
   $$(".roster-card-row").forEach((row) => {
-    row.classList.remove("is-drawing", "has-roll-result");
+    row.classList.remove("is-drawing", "has-roll-result", "hero-self-pick");
     delete row.dataset.resultIndex;
+    const reroll = row.querySelector("[data-reroll]");
+    if (reroll) {
+      reroll.setAttribute("aria-label", "重新随机英雄");
+      reroll.title = "重新随机英雄";
+    }
   });
   $("#rollBtn").classList.remove("hidden");
+  $("#confirmDraftBtn").classList.add("hidden");
+  $("#confirmDraftBtn").disabled = false;
   $("#backBtn").classList.add("hidden");
+  $("#backBtn").disabled = false;
   $("#revealBtn").classList.add("hidden");
   $("#recordBtn").classList.add("hidden");
+  $("#rerollPlayersBtn").classList.add("hidden");
   $("#againBtn").classList.add("hidden");
+  $("#againBtn").disabled = false;
+  state.results = [];
+  state.order = [];
+  state.revealed = 0;
+  state.draftFirstPhase = "setup";
   setDrawOptionsLocked(false);
+  renderRuleMode();
 }
 
 function resetSetup() {
@@ -1738,6 +2139,7 @@ function resetSetup() {
   $("#randomTeams").checked = true;
   $("#randomPositions").checked = true;
   $("#randomHeroes").checked = true;
+  state.classicRandomHeroesOption = true;
   $("#uniqueHeroes").checked = true;
   $("#globalBp").checked = true;
   $("#rollError").textContent = "";
@@ -2492,6 +2894,7 @@ async function submitMatch(event) {
     $("#recordDialog").close();
     $("#recordBtn").disabled = true;
     $("#recordBtn").textContent = "本局已记录";
+    $("#rerollPlayersBtn").classList.add("hidden");
     $$(".reroll").forEach((item) => { item.disabled = true; });
     const cycleComplete = commitGlobalBpResults(snapshot);
     toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已写入共享战绩。");
@@ -2506,6 +2909,7 @@ async function submitMatch(event) {
       $("#recordDialog").close();
       $("#recordBtn").disabled = true;
       $("#recordBtn").textContent = "本局已记录";
+      $("#rerollPlayersBtn").classList.add("hidden");
       const cycleComplete = commitGlobalBpResults(snapshot || matchSnapshot());
       toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已成功记录。");
       maybeAdvanceBatchImport();
@@ -3653,7 +4057,12 @@ function handleDateRangeChange(prefix) {
 }
 
 function bindEvents() {
+  $$('[data-rule-mode]').forEach((button) => {
+    button.addEventListener("click", () => selectRuleMode(button.dataset.ruleMode));
+  });
   $("#rollBtn").addEventListener("click", roll);
+  $("#confirmDraftBtn").addEventListener("click", confirmHeroDraft);
+  $("#rerollPlayersBtn").addEventListener("click", rerollDraftPlayers);
   $("#testFillBtn").addEventListener("click", fillTestPlayers);
   $("#adminReconcileBtn").addEventListener("click", reconcilePlayerStats);
   $("#adminPlayerSelectAll").addEventListener("change", (event) => selectVisibleAdminRows("player", event.target.checked));
@@ -3750,6 +4159,9 @@ $("#resetMappingsBtn")?.addEventListener("click", resetMappings);
       renderPlayerSuggestions(event.target);
     }
     if (event.target.matches(".cost-input,.team-name") || event.target.closest(".draw-option")) {
+      if (event.target.id === "randomHeroes" && state.ruleMode !== RULE_MODES.DRAFT_FIRST) {
+        state.classicRandomHeroesOption = event.target.checked;
+      }
       updateCostTotals();
       saveLocalSetup();
       renderDrawOptionsStatus();
@@ -3773,6 +4185,12 @@ $("#resetMappingsBtn")?.addEventListener("click", resetMappings);
     selectPlayerSuggestion(input, option.dataset.playerOption);
   });
   document.addEventListener("keydown", (event) => {
+    const reroll = event.target.closest("[data-reroll]");
+    if (reroll && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      rerollHero(Number(reroll.dataset.reroll));
+      return;
+    }
     if (!event.target.matches(".player-name")) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -3866,7 +4284,8 @@ $("#resetMappingsBtn")?.addEventListener("click", resetMappings);
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") return;
-    if ($("#setupSection").classList.contains("roll-active") && (event.code === "Space" || event.code === "Enter") && !event.target.closest("button,input,select,textarea,dialog")) {
+    const canReveal = !(state.ruleMode === RULE_MODES.DRAFT_FIRST && state.draftFirstPhase === "heroes");
+    if (canReveal && $("#setupSection").classList.contains("roll-active") && (event.code === "Space" || event.code === "Enter") && !event.target.closest("button,input,select,textarea,dialog")) {
       event.preventDefault();
       revealAll();
     }
@@ -3879,6 +4298,7 @@ loadGlobalBpState();
 startGlobalBpDayTimer();
 updateCostTotals();
 renderDrawOptionsStatus();
+renderRuleMode();
 bindEvents();
 subscribeAuthSnapshot(syncAuthState);
 subscribeActiveView(syncActiveView);

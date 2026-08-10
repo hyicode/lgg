@@ -72,8 +72,10 @@ function ClashDivider() {
       <div className="control clash-controls">
         <div className="draw-actions">
           <button className="roll" id="rollBtn">开启天命！</button>
+          <button className="primary hidden" id="confirmDraftBtn" type="button">确认阵容并分配选手</button>
           <button className="reveal hidden" id="revealBtn">揭晓天命</button>
           <button className="primary hidden" id="recordBtn">记录本局</button>
+          <button className="ghost hidden" id="rerollPlayersBtn" type="button">重新随机选手</button>
           <button className="ghost hidden" id="againBtn">再启天命</button>
           <button className="ghost hidden" id="backBtn">调整阵容</button>
         </div>
@@ -86,14 +88,16 @@ function ClashDivider() {
 function RollView({ active }: { active: boolean }) {
   return (
     <section className={viewClassName(active)} id="rollView">
-      <section id="setupSection">
-        <div className="setup">
-          <TeamSetup side="blue" name="蓝方" />
-          <ClashDivider />
-          <TeamSetup side="red" name="红方" />
-        </div>
-        <div className="form-error" id="rollError" role="alert" />
-      </section>
+      <div className="rule-workspace" id="ruleWorkspace">
+        <section id="setupSection">
+          <div className="setup">
+            <TeamSetup side="blue" name="蓝方" />
+            <ClashDivider />
+            <TeamSetup side="red" name="红方" />
+          </div>
+          <div className="form-error" id="rollError" role="alert" />
+        </section>
+      </div>
 
       <section className="arena" id="arena" aria-live="polite">
         <div className="ban-list" id="banListLeft" />

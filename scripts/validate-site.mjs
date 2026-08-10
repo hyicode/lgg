@@ -19,6 +19,7 @@ const files = [
   "src/domain/stats.ts",
   "src/domain/search.ts",
   "src/domain/collector.ts",
+  "src/domain/draft.ts",
   "src/config/supabase.ts",
   "vite.config.ts",
   "assets/styles.css",
