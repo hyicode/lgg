@@ -18,6 +18,13 @@ import {
   subscribeSharedData,
 } from "../data/sharedData";
 import { bindDraftChampions } from "../domain/draft";
+import {
+  beijingBpDayKey,
+  GLOBAL_BP_RESET_TRIGGERS,
+  hasGlobalBpProgress,
+  nextGlobalBpRound,
+  shouldResetGlobalBp,
+} from "../domain/globalBp";
 import { pinyin } from "pinyin-pro";
 
 const $ = (selector) => document.querySelector(selector);
@@ -67,7 +74,6 @@ const state = {
   riotAccounts: new Map(),
   playerStats: new Map(),
   playerPickerInput: null,
-  globalBpRosterKey: "",
   globalBpUsed: new Set(),
   globalBpRounds: 0,
   globalBpCommittedDraftId: null,
@@ -127,38 +133,28 @@ function positionIconMarkup(position, className = "") {
   return `<span class="${classes}" role="img" aria-label="${escapeHtml(normalized.label)}"><img src="${iconPath}" alt="" aria-hidden="true"></span>`;
 }
 
-function beijingDayKey() {
-  const now = new Date();
-  const bj = new Date(now.getTime() + 8 * 60 * 60 * 1000);
-  const year = bj.getUTCFullYear();
-  const month = String(bj.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(bj.getUTCDate()).padStart(2, "0");
-  if (bj.getUTCHours() < 8) {
-    const prev = new Date(bj.getTime() - 24 * 60 * 60 * 1000);
-    return `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, "0")}-${String(prev.getUTCDate()).padStart(2, "0")}`;
-  }
-  return `${year}-${month}-${day}`;
+function resetGlobalBpState(trigger) {
+  if (!shouldResetGlobalBp(trigger)) return false;
+  state.globalBpUsed = new Set();
+  state.globalBpRounds = 0;
+  state.globalBpCommittedDraftId = null;
+  return true;
 }
 
 function loadGlobalBpState() {
   try {
     const saved = JSON.parse(localStorage.getItem("lgg-global-bp-v1") || "null");
-    const today = beijingDayKey();
+    const today = beijingBpDayKey();
     if (saved?.lastResetDay && saved.lastResetDay !== today) {
-      state.globalBpRosterKey = "";
-      state.globalBpUsed = new Set();
-      state.globalBpRounds = 0;
-      state.globalBpCommittedDraftId = null;
+      resetGlobalBpState(GLOBAL_BP_RESET_TRIGGERS.BEIJING_EIGHT_AM);
       saveGlobalBpState();
       return;
     }
-    state.globalBpRosterKey = typeof saved?.rosterKey === "string" ? saved.rosterKey : "";
     state.globalBpUsed = new Set(Array.isArray(saved?.used) ? saved.used.filter(Boolean) : []);
     state.globalBpRounds = Number.isInteger(saved?.rounds)
       ? Math.min(4, Math.max(0, saved.rounds))
       : state.globalBpUsed.size ? 1 : 0;
   } catch {
-    state.globalBpRosterKey = "";
     state.globalBpUsed = new Set();
     state.globalBpRounds = 0;
   }
@@ -167,10 +163,9 @@ function loadGlobalBpState() {
 function saveGlobalBpState() {
   try {
     localStorage.setItem("lgg-global-bp-v1", JSON.stringify({
-      rosterKey: state.globalBpRosterKey,
       used: [...state.globalBpUsed],
       rounds: state.globalBpRounds,
-      lastResetDay: beijingDayKey(),
+      lastResetDay: beijingBpDayKey(),
     }));
   } catch {
     // 本机规则状态保存失败不影响天命流程。
@@ -183,12 +178,9 @@ function startGlobalBpDayTimer() {
   globalBpDayTimer = setInterval(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("lgg-global-bp-v1") || "null");
-      const today = beijingDayKey();
-      if (saved?.lastResetDay && saved.lastResetDay !== today && state.globalBpUsed.size > 0) {
-        state.globalBpRosterKey = "";
-        state.globalBpUsed = new Set();
-        state.globalBpRounds = 0;
-        state.globalBpCommittedDraftId = null;
+      const today = beijingBpDayKey();
+      if (saved?.lastResetDay && saved.lastResetDay !== today && hasGlobalBpProgress(state.globalBpUsed, state.globalBpRounds)) {
+        resetGlobalBpState(GLOBAL_BP_RESET_TRIGGERS.BEIJING_EIGHT_AM);
         saveGlobalBpState();
         renderDrawOptionsStatus();
         toast("已到北京时间 8 点，全局 BP 英雄池已自动清空。");
@@ -197,32 +189,11 @@ function startGlobalBpDayTimer() {
   }, 30_000);
 }
 
-function currentRosterKey() {
-  return [...lineup("blue"), ...lineup("red")]
-    .map((player) => player.id)
-    .filter(Boolean)
-    .sort()
-    .join("|");
-}
-
-function ensureGlobalBpRoster() {
-  const rosterKey = currentRosterKey();
-  if (rosterKey === state.globalBpRosterKey) return;
-  state.globalBpRosterKey = rosterKey;
-  state.globalBpUsed = new Set();
-  state.globalBpRounds = 0;
-  state.globalBpCommittedDraftId = null;
-  saveGlobalBpState();
-}
-
 function clearGlobalBp() {
-  state.globalBpRosterKey = currentRosterKey();
-  state.globalBpUsed = new Set();
-  state.globalBpRounds = 0;
-  state.globalBpCommittedDraftId = null;
+  resetGlobalBpState(GLOBAL_BP_RESET_TRIGGERS.MANUAL);
   saveGlobalBpState();
   renderDrawOptionsStatus();
-  toast("已清空当前阵容的全局 BP 英雄池。");
+  toast("已手动清空全局 BP 英雄池。");
 }
 
 function renderDrawOptionsStatus() {
@@ -1641,7 +1612,6 @@ function renderHeroDraftPreview() {
 function rollDraftFirst() {
   if (!validateSetup()) return;
   backToSetup();
-  if ($("#globalBp").checked) ensureGlobalBpRoster();
   saveLocalSetup();
   try {
     const blue = assignTeam(lineup("blue"), "blue");
@@ -1770,7 +1740,6 @@ function roll() {
   if (!validateSetup()) return;
   if ($("#randomTeams").checked) randomizeTeams();
   if ($("#randomPositions").checked) randomizeTeamPositions();
-  if ($("#globalBp").checked) ensureGlobalBpRoster();
   saveLocalSetup();
   try {
     const blue = assignTeam(lineup("blue"), "blue");
@@ -1893,11 +1862,12 @@ function commitGlobalBpResults(snapshot) {
     if (slug) state.globalBpUsed.add(slug);
   });
   state.globalBpCommittedDraftId = state.draftId;
-  state.globalBpRounds += 1;
-  const cycleComplete = state.globalBpRounds >= 5;
+  const nextRound = nextGlobalBpRound(state.globalBpRounds);
+  state.globalBpRounds = nextRound.rounds;
+  const cycleComplete = nextRound.cycleComplete;
   if (cycleComplete) {
-    state.globalBpRounds = 0;
-    state.globalBpUsed = new Set();
+    resetGlobalBpState(GLOBAL_BP_RESET_TRIGGERS.FIVE_ROUNDS);
+    state.globalBpCommittedDraftId = state.draftId;
   }
   saveGlobalBpState();
   renderDrawOptionsStatus();

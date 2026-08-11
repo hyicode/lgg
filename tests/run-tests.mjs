@@ -6,3 +6,4 @@ import "./auth.test.mjs";
 import "./navigation.test.mjs";
 import "./shared-data.test.mjs";
 import "./draft.test.mjs";
+import "./global-bp.test.mjs";

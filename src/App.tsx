@@ -51,7 +51,7 @@ function ClashDivider() {
             <input type="checkbox" id="uniqueHeroes" defaultChecked />
             <span><strong>禁止英雄重复</strong></span>
           </label>
-          <label className="draw-option global-bp-option" title="记录本局后计入一轮，已用英雄后续不可再选，第五轮后自动重置">
+          <label className="draw-option global-bp-option" title="记录本局后计入一轮，已用英雄后续不可再选；第五轮结束、北京时间每日 8 点或手动操作时清空">
             <input type="checkbox" id="globalBp" defaultChecked />
             <span><strong>全局 BP</strong></span>
           </label>
