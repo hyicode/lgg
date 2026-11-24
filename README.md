@@ -59,6 +59,10 @@ py -3 scripts/convert-supabase-backup.py backups/original.backup.gz backups/lgg-
 原始备份保留完整数据库内容，应妥善保存。`backups/` 已加入 Git 忽略，且不属于公开站点构建目录。
 旧 SQL 脚本保留供归档使用。每日 OPGG 工作流只更新 JSON 文件，不再写数据库。
 
+每日北京时间 00:23 采集五路英雄数据，最新结果写入 `data/opgg-data.json`，历史版本由 Git 保存。
+采集成功后自动触发网站发布，将 JSON 复制到 GitHub Pages 的 `data/opgg-data.json`。
+浏览器另缓存一份英雄池，供网络异常时继续使用；D1 只保存共享选手、账号和比赛。
+
 ## D1 免费套餐与云端模式
 
 部署和备份迁移见 [D1_SETUP.md](D1_SETUP.md)。网站仍可放在 GitHub Pages，只有主动登录
