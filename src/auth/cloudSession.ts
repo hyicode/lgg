@@ -7,7 +7,7 @@ export const cloudEndpoint = (import.meta.env.VITE_D1_API_URL || DEFAULT_D1_API_
 function readSession(): CloudSession | null {
   try {
     const saved = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
-    if (saved?.endpoint === cloudEndpoint && saved.token?.length >= 32 && ['admin', 'member'].includes(saved.role) && saved.expiresAt > Date.now()) return saved;
+    if (saved?.endpoint === cloudEndpoint && saved.token?.length >= 6 && ['admin', 'member'].includes(saved.role) && saved.expiresAt > Date.now()) return saved;
   } catch { /* Storage unavailable: guest mode is still usable. */ }
   return null;
 }
@@ -16,11 +16,11 @@ export function getDataClient() { return createDataAccess(cloudSession, localSto
 export function getModeStorage() {
   return scopedStorage(localStorage, cloudSession ? `${cloudSession.endpoint}.${cloudSession.role}` : null);
 }
-export async function loginCloud(token: string) {
+export async function loginCloud(token: string, role: 'admin' | 'member') {
   if (!cloudEndpoint) throw new Error('云端尚未配置，当前可使用游客本地功能。');
   const url = new URL(cloudEndpoint);
   if (url.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(url.hostname)) throw new Error('云端接口必须使用 HTTPS。');
-  const session: CloudSession = { endpoint: cloudEndpoint, token: token.trim(), role: 'member' };
+  const session: CloudSession = { endpoint: cloudEndpoint, token, role };
   const result = await cloudRequest(session, '/api/session');
   if (!['admin', 'member'].includes(result.role)) throw new Error('云端身份响应无效。');
   session.role = result.role;

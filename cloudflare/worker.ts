@@ -11,6 +11,7 @@ export interface Env {
   ADMIN_TOKEN?: string;
   MEMBER_TOKEN?: string;
   FRONTEND_ORIGINS: string;
+  AUTH_RATE_LIMIT: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 class HttpError extends Error {
   status: number;
@@ -20,7 +21,7 @@ function requireValue(condition: unknown, message = '请求数据无效。'): as
   if (!condition) throw new HttpError(400, message);
 }
 async function equalSecret(a: string, b?: string) {
-  if (!b || b.length < 32 || a.length < 32 || a.length > 256) return false;
+  if (!b || b.length < 6 || a.length < 6 || a.length > 256) return false;
   const encoder = new TextEncoder();
   const [left, right] = await Promise.all([a, b].map(value => crypto.subtle.digest('SHA-256', encoder.encode(value))));
   const x = new Uint8Array(left), y = new Uint8Array(right);
@@ -30,9 +31,14 @@ async function equalSecret(a: string, b?: string) {
 }
 async function authenticate(request: Request, env: Env) {
   const token = request.headers.get('Authorization')?.replace(/^Bearer /, '') || '';
-  if (await equalSecret(token, env.ADMIN_TOKEN)) return 'admin';
-  if (await equalSecret(token, env.MEMBER_TOKEN)) return 'member';
-  throw new HttpError(401, '访问码无效或已撤销，请重新登录云端。');
+  const role = request.headers.get('X-LGG-Role');
+  if (role && !['admin', 'member'].includes(role)) throw new HttpError(401, '请选择有效的登录身份。');
+  // Legacy long access codes remain compatible, but a shared password always
+  // requires an explicit role; never silently promote members to admin.
+  if (!role && env.ADMIN_TOKEN === env.MEMBER_TOKEN) throw new HttpError(401, '请选择成员或管理员身份后登录。');
+  if (role !== 'member' && await equalSecret(token, env.ADMIN_TOKEN)) return 'admin';
+  if (role !== 'admin' && await equalSecret(token, env.MEMBER_TOKEN)) return 'member';
+  throw new HttpError(401, '密码不正确或已更改，请重新登录云端。');
 }
 async function readJson(request: Request) {
   // Enforce a real stream limit, including requests without Content-Length.
@@ -138,8 +144,12 @@ export default {
     if (origin && allowed.includes(origin)) headers['Access-Control-Allow-Origin'] = origin;
     const respond = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers });
     if (origin && !allowed.includes(origin)) return respond({ error: '来源未获允许。' }, 403);
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...headers, 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...headers, 'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-LGG-Role', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } });
     try {
+      // All credential-bearing API routes share a per-IP budget so guessing via
+      // a data route cannot bypass the login limit. No D1 access is needed.
+      const allowed = await env.AUTH_RATE_LIMIT.limit({ key: `auth:${request.headers.get('CF-Connecting-IP') || 'local'}` });
+      if (!allowed.success) { headers['Retry-After'] = '60'; throw new HttpError(429, '请求过于频繁，请一分钟后重试。'); }
       // Even reads require membership. An unauthenticated request never touches D1.
       const role = await authenticate(request, env);
       const path = new URL(request.url).pathname;

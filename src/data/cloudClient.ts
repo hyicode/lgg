@@ -6,7 +6,7 @@ export async function cloudRequest(session: CloudSession, path: string, body?: u
   if (session.expiresAt && session.expiresAt <= Date.now()) throw new Error('云端登录已过期，请退出后重新登录。');
   const response = await fetcher(`${session.endpoint}${path}`, {
     method: body === undefined ? 'GET' : 'POST', cache: 'no-store', credentials: 'omit',
-    headers: { Authorization: `Bearer ${session.token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    headers: { Authorization: `Bearer ${session.token}`, 'X-LGG-Role': session.role, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     signal: AbortSignal.timeout(15000),
   });

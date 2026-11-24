@@ -6,11 +6,13 @@
 ## 数据与权限
 
 - 游客：默认入口；全部业务读写走当前浏览器 `localStorage`，不向 Worker/D1 发请求。
-- 云端成员：输入成员访问码后查看共享选手/比赛，新增比赛和缺失的游戏账号。
-- 云端管理员：另用管理员访问码维护云端选手、修改和删除比赛。
-- 访问码是本项目的凭证，不是 Cloudflare API Token；使用至少 32 字节随机生成值。
-  Worker Secrets 保存访问码，前端仅将用户输入的访问码放在本标签页 `sessionStorage`，12 小时后需重新登录。
-  这属于小团队共享访问码，不提供个人账号审计；轮换 Worker Secret 可立即撤销旧码。
+- 云端成员：选择“普通成员”并输入密码后查看共享选手/比赛，新增比赛和缺失的游戏账号。
+- 云端管理员：选择“管理员”并输入密码后维护云端选手、修改和删除比赛。
+- 密码是本项目的凭证，不是 Cloudflare API Token；支持 6～256 个字符，原长访问码也可使用。
+  Worker Secrets 保存密码，前端仅放在本标签页 `sessionStorage`，12 小时后需重新登录。
+  两种身份可设置不同密码；若设置成相同密码，知道密码的人也能选择管理员身份。
+  这属于小团队共享登录，不提供个人账号审计；轮换 Worker Secret 可立即撤销旧密码。
+  每个 Cloudflare 节点按来源 IP 限制每分钟约 120 次 API 请求，避免单一来源无限猜测密码。
 - 退出云端会重新加载页面并恢复游客数据。游客与云端的选手、比赛、阵容、全局 BP、账号映射分别存储；不会自动上传游客记录。
 - 每日英雄池继续由 GitHub Actions 生成静态 JSON，两种模式均可读取。它不需要数据库保活。
 
@@ -57,13 +59,18 @@ Workers Free 每天 10 万次请求。超限可能导致接口失败，前端不
    `player_stats` 从比赛实时重算；Supabase Auth、密码、profiles 和会话不迁移。
    使用普通 INSERT；重复导入报冲突，不覆盖现有数据。源文件与 SQL 均放在被忽略的 `backups/`，不要放进 `public/` 或 `data/`。
 
-4. 使用两个独立、随机的长访问码，分别通过交互提示写入 Worker Secrets（不提交到 Git）：
+4. 分别通过交互提示写入两种身份的密码至 Worker Secrets（不提交到 Git）：
 
    ```powershell
    pnpm exec wrangler secret put ADMIN_TOKEN --config cloudflare/wrangler.jsonc
    pnpm exec wrangler secret put MEMBER_TOKEN --config cloudflare/wrangler.jsonc
    pnpm d1:deploy
    ```
+
+   以后修改密码也使用上述 `secret put` 命令：`MEMBER_TOKEN` 对应普通成员，`ADMIN_TOKEN` 对应管理员。
+   在提示中输入新密码即可，无需修改数据库或重新发布网页。也可在 Cloudflare 的
+   Workers & Pages → lgg-api → Settings → Variables and Secrets 修改对应 Secret 并部署。
+   修改后旧密码立即失效，已打开的旧登录会话需要退出后重新登录。
 
    访问码未配置时所有业务接口返回 401，避免未受保护的数据库访问。
 

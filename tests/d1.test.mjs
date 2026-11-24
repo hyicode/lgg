@@ -7,7 +7,7 @@ import { backupToSql } from '../scripts/prepare-d1-import.mjs';
 import { emptyBackup } from '../src/data/localStore.ts';
 
 const admin = 'a'.repeat(64), member = 'm'.repeat(64);
-function setup() {
+function setup(overrides = {}) {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec(readFileSync(new URL('../cloudflare/migrations/0001_business_data.sql', import.meta.url), 'utf8'));
   let calls = 0;
@@ -21,13 +21,35 @@ function setup() {
     sqlite.exec('BEGIN');
     try { const results = []; for (const statement of statements) results.push(await statement.all()); sqlite.exec('COMMIT'); return results; }
     catch (error) { sqlite.exec('ROLLBACK'); throw error; }
-  } }, ADMIN_TOKEN: admin, MEMBER_TOKEN: member, FRONTEND_ORIGINS: 'https://hyicode.github.io' };
-  async function request(path, token, body, origin = 'https://hyicode.github.io') {
-    return worker.fetch(new Request(`https://api.example${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Origin: origin, ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
+  } }, ADMIN_TOKEN: admin, MEMBER_TOKEN: member, FRONTEND_ORIGINS: 'https://hyicode.github.io', AUTH_RATE_LIMIT: { limit: async () => ({ success: true }) }, ...overrides };
+  async function request(path, token, body, origin = 'https://hyicode.github.io', role) {
+    return worker.fetch(new Request(`https://api.example${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { Origin: origin, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(role ? { 'X-LGG-Role': role } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
   }
   return { sqlite, request, calls: () => calls };
 }
 const player = { id: 'p1', display_name: "测试'选手", normalized_name: "测试'选手", default_cost: 1.5, active: true };
+test('shared passwords require an explicit identity and preserve member restrictions', async () => {
+  const password = 'testpwd';
+  const s = setup({ ADMIN_TOKEN: password, MEMBER_TOKEN: password });
+  assert.equal((await s.request('/api/session', password)).status, 401);
+  for (const role of ['member', 'admin']) {
+    const r = await s.request('/api/session', password, undefined, 'https://hyicode.github.io', role);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).role, role);
+  }
+  assert.equal((await s.request('/api/query', password, { table: 'players', operation: 'delete' }, 'https://hyicode.github.io', 'member')).status, 403);
+  assert.equal((await s.request('/api/session', 'incorrect', undefined, 'https://hyicode.github.io', 'admin')).status, 401);
+  assert.equal(s.calls(), 0);
+  s.sqlite.close();
+});
+test('credential rate limit prevents data access and applies beyond the login route', async () => {
+  const s = setup({ AUTH_RATE_LIMIT: { limit: async () => ({ success: false }) } });
+  for (const path of ['/api/session', '/api/snapshot']) {
+    const r = await s.request(path, admin);
+    assert.equal(r.status, 429); assert.equal(r.headers.get('retry-after'), '60');
+  }
+  assert.equal(s.calls(), 0); s.sqlite.close();
+});
 test('D1 authentication and origin checks reject guests before any database access', async () => {
   const s = setup();
   assert.equal((await s.request('/api/snapshot')).status, 401);
