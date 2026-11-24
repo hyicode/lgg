@@ -2,6 +2,11 @@
 .collector-bridge*.log
 .local-web*.log
 .idea/
+# Private database exports, never bundled into the public site.
+/backups/
+.env*
+.dev.vars*
+.wrangler/
 
 # JavaScript dependencies and Vite output
 node_modules/

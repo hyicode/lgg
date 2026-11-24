@@ -5850,3 +5850,13 @@ dialog {
     order: 3;
   }
 }
+.local-backup-panel {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line, #30394c);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.local-backup-panel p { margin: 0 0 8px; }
+.local-backup-panel [role="status"]:not(:empty) { margin-top: 8px; }

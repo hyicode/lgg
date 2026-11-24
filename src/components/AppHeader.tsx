@@ -1,11 +1,12 @@
 import type { MemberProfile } from "../auth/authState";
 import type { ViewId } from "../navigation/viewState";
+import { LocalBackupControls } from "./LocalBackupControls";
+import { CloudLogin } from "./CloudLogin";
 
 interface AppHeaderProps {
   member: MemberProfile | null;
   activeView: ViewId;
   onNavigate(view: ViewId): void;
-  onLogout(): Promise<void>;
 }
 
 const navigationItems: ReadonlyArray<{ id: ViewId; label: string; adminOnly?: boolean }> = [
@@ -15,8 +16,8 @@ const navigationItems: ReadonlyArray<{ id: ViewId; label: string; adminOnly?: bo
   { id: "adminView", label: "管理", adminOnly: true },
 ];
 
-export function AppHeader({ activeView, member, onLogout, onNavigate }: AppHeaderProps) {
-  const admin = member?.role === "admin";
+export function AppHeader({ activeView, member, onNavigate }: AppHeaderProps) {
+  const admin = member?.role === "guest" || member?.role === "admin";
 
   return (
     <>
@@ -36,9 +37,8 @@ export function AppHeader({ activeView, member, onLogout, onNavigate }: AppHeade
         </div>
         <div className="account-box">
           <span id="accountLabel">
-            {member ? `${member.displayName || member.role} · ${admin ? "管理员" : "公共账号"}` : ""}
+            {member?.role === 'guest' ? '游客 · 本地模式' : `${member?.displayName || '成员'} · 云端模式`}
           </span>
-          <button className="mini" id="logoutBtn" onClick={() => void onLogout()}>退出</button>
         </div>
       </header>
 
@@ -54,6 +54,8 @@ export function AppHeader({ activeView, member, onLogout, onNavigate }: AppHeade
           </button>
         ))}
       </nav>
+      {member?.role === 'guest' && <LocalBackupControls />}
+      <CloudLogin />
 
       <div className="toolbar">
         <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>

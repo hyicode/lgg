@@ -1,6 +1,5 @@
 import type { MouseEvent } from "react";
 import { AppHeader } from "./components/AppHeader";
-import { AuthGate } from "./components/AuthGate";
 import { DateRangeFilters } from "./components/DateRangeFilters";
 import { useAuth } from "./hooks/useAuth";
 import { useAppController } from "./hooks/useAppController";
@@ -133,7 +132,7 @@ function LeaderboardView({ active }: { active: boolean }) {
   return (
     <section className={viewClassName(active)} id="leaderboardView">
       <div className="section-head">
-        <div><h2>共享战绩</h2><p>按正式提交的对局实时计算。</p></div>
+        <div><h2>战绩统计</h2><p>按当前模式已保存的对局实时计算。</p></div>
         <div className="filters"><DateRangeFilters prefix="rank" /></div>
       </div>
       <div className="summary-grid" id="summaryGrid" />
@@ -169,7 +168,7 @@ function AdminView({ active }: { active: boolean }) {
   return (
     <section className={viewClassName(active)} id="adminView">
       <div className="section-head">
-        <div><h2>管理员控制台</h2><p>维护共享选手库并修正正式比赛。</p></div>
+        <div><h2>数据管理</h2><p>维护当前模式的选手库并修正比赛记录。</p></div>
         <div className="admin-head-actions admin-only hidden">
           <button className="ghost" id="adminReconcileBtn" type="button">数据校对</button>
           <button className="ghost" id="testFillBtn" type="button">测试填充阵容</button>
@@ -234,17 +233,15 @@ function MainApplication({
   member,
   activeView,
   onNavigate,
-  onLogout,
 }: {
   hidden: boolean;
   member: MemberProfile | null;
   activeView: ViewId;
   onNavigate(view: ViewId): void;
-  onLogout(): Promise<void>;
 }) {
   return (
     <main className={`app${hidden ? " hidden" : ""}`} id="app">
-      <AppHeader activeView={activeView} member={member} onLogout={onLogout} onNavigate={onNavigate} />
+      <AppHeader activeView={activeView} member={member} onNavigate={onNavigate} />
       <RollView active={activeView === "rollView"} />
       <HistoryView active={activeView === "historyView"} />
       <LeaderboardView active={activeView === "leaderboardView"} />
@@ -553,25 +550,17 @@ function Dialogs() {
 export default function App() {
   const auth = useAuth();
   const controllerError = useAppController();
-  const authenticated = auth.snapshot.status === "authenticated";
-  const navigation = useViewNavigation(auth.snapshot.member?.role === "admin");
+  const authenticated = auth.snapshot.status === "guest" || auth.snapshot.status === "authenticated";
+  const navigation = useViewNavigation(auth.snapshot.member?.role === "guest" || auth.snapshot.member?.role === "admin");
   const sharedData = useSharedData(authenticated);
 
   return (
     <>
-      <AuthGate
-        configured={auth.configured}
-        error={auth.snapshot.error}
-        hidden={authenticated}
-        loading={auth.snapshot.status === "loading" || auth.submitting}
-        onLogin={auth.login}
-      />
       <MainApplication
         activeView={navigation.activeView}
         hidden={!authenticated}
         member={auth.snapshot.member}
         onNavigate={navigation.navigate}
-        onLogout={auth.logout}
       />
       <Dialogs />
       {controllerError ? (

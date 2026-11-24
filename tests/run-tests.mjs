@@ -7,3 +7,7 @@ import "./navigation.test.mjs";
 import "./shared-data.test.mjs";
 import "./draft.test.mjs";
 import "./global-bp.test.mjs";
+import "./opgg-sync.test.mjs";
+import "./local-store.test.mjs";
+import "./data-access.test.mjs";
+import "./d1.test.mjs";

@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "lgg-api",
+  "account_id": "522bf3c77fd2b960ae1e238ffcccfaf6",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-24",
+  "workers_dev": true,
+  "vars": {
+    "FRONTEND_ORIGINS": "https://hyicode.github.io"
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "lgg", "database_id": "9a5ca9b9-7a0c-40e2-9a8d-cab5c59aace1", "migrations_dir": "migrations" }
+  ]
+}

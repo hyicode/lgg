@@ -1,16 +1,15 @@
-import type { User } from "@supabase/supabase-js";
-
 export interface MemberProfile {
   username: string;
   displayName: string;
-  role: "admin" | "member";
+  role: "admin" | "member" | "guest";
   active: boolean;
 }
 
 export type AuthSnapshot =
+  | { status: "guest"; user: null; member: MemberProfile; error: null }
   | { status: "loading"; user: null; member: null; error: null }
   | { status: "anonymous"; user: null; member: null; error: string | null }
-  | { status: "authenticated"; user: User; member: MemberProfile; error: null };
+  | { status: "authenticated"; user: null; member: MemberProfile; error: null };
 
 type AuthSubscriber = (snapshot: AuthSnapshot) => void;
 

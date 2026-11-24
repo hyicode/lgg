@@ -65,6 +65,8 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
 
       - run: pnpm check
+        env:
+          VITE_D1_API_URL: ${{ vars.VITE_D1_API_URL }}
 
       - uses: actions/configure-pages@v4
         if: github.ref == 'refs/heads/main'

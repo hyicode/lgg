@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { RealtimeChannel } from "@supabase/supabase-js";
+import { aggregatePlayerStats } from "../domain/stats";
+import { LOCAL_DATA_EVENT, LOCAL_DATA_KEY, validateBackup } from "../data/localStore";
+import { CLOUD_DATA_EVENT } from "../data/cloudClient";
+import { cloudSession, getDataClient } from "../auth/cloudSession";
 import { normalizeClientPositionKey } from "../domain/collector";
 import { emptySharedData, publishSharedData, subscribeSharedDataRefresh } from "../data/sharedData";
 import type { Match, Player, SharedDataSnapshot, StoredParticipant } from "../data/models";
-import { getSupabaseClient } from "../services/supabaseClient";
 
 const positionLabels: Readonly<Record<string, string>> = {
   top: "上单",
@@ -58,75 +60,45 @@ function mapMatch(row: Record<string, unknown>): Match {
 }
 
 export function useSharedData(enabled: boolean) {
-  const client = getSupabaseClient();
   const [snapshot, setSnapshot] = useState<SharedDataSnapshot>(emptySharedData);
   const [error, setError] = useState<string | null>(null);
-
   const refresh = useCallback(async () => {
-    if (!client || !enabled) return;
-    const [playersResult, matchesResult, accountsResult, statsResult] = await Promise.all([
-      client.from("players").select("*").order("display_name", { ascending: true }),
-      client.from("matches").select("id,played_at,created_at,winner,duration_seconds,note,blue_team,red_team,participants").order("played_at", { ascending: false }),
-      client.from("riot_accounts").select("id, account_name"),
-      client.from("player_stats").select("player_id, games, wins, losses, kills, deaths, assists"),
-    ]);
-    const firstError = playersResult.error || matchesResult.error || accountsResult.error || statsResult.error;
-    if (firstError) {
-      setError(`共享数据读取失败：${firstError.message}`);
-      return;
+    if (!enabled) return;
+    try {
+      const { tables } = validateBackup(await getDataClient().readBackup());
+      const riotAccounts = new Map(tables.riot_accounts.map(row => [String(row.id), String(row.account_name)]));
+      const matches = tables.matches.map(mapMatch).sort((a, b) => b.playedAt.localeCompare(a.playedAt));
+      matches.forEach(match => match.participants?.forEach(participant => {
+        if (!participant.accountName && participant.riotAccountId) {
+          participant.accountName = riotAccounts.get(participant.riotAccountId) || "";
+        }
+      }));
+      const next = {
+        players: tables.players.map(mapPlayer).sort((a, b) => a.displayName.localeCompare(b.displayName, "zh-CN")),
+        matches, riotAccounts, playerStats: aggregatePlayerStats(matches),
+      };
+      setSnapshot(next);
+      publishSharedData(next);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "数据读取失败。");
     }
-
-    setError(null);
-    const riotAccounts = new Map((accountsResult.data || []).map((row) => [String(row.id), String(row.account_name)]));
-    const matches = (matchesResult.data || []).map((row) => mapMatch(row as Record<string, unknown>));
-    matches.forEach((match) => match.participants?.forEach((participant) => {
-      if (!participant.accountName && participant.riotAccountId) {
-        participant.accountName = riotAccounts.get(participant.riotAccountId) || "";
-      }
-    }));
-    setSnapshot({
-      players: (playersResult.data || []).map((row) => mapPlayer(row as Record<string, unknown>)),
-      matches,
-      riotAccounts,
-      playerStats: new Map((statsResult.data || []).map((row) => [String(row.player_id), {
-        playerId: String(row.player_id),
-        games: Number(row.games || 0),
-        wins: Number(row.wins || 0),
-        losses: Number(row.losses || 0),
-        kills: Number(row.kills || 0),
-        deaths: Number(row.deaths || 0),
-        assists: Number(row.assists || 0),
-      }])),
-    });
-  }, [client, enabled]);
-
+  }, [enabled]);
   useEffect(() => {
-    if (!enabled || !client) {
-      setSnapshot(emptySharedData());
-      return;
-    }
     void refresh();
-    let channel: RealtimeChannel | null = client
-      .channel("lgg-react-shared-data")
-      .on("postgres_changes", { event: "*", schema: "public", table: "players" }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "riot_accounts" }, () => void refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "player_stats" }, () => void refresh())
-      .subscribe((status) => {
-        if (status === "CHANNEL_ERROR") setError("实时同步连接失败，刷新页面后会重新连接。");
-      });
-    const unsubscribeRefresh = subscribeSharedDataRefresh(() => void refresh());
-
-    return () => {
-      unsubscribeRefresh();
-      if (channel) void client.removeChannel(channel);
-      channel = null;
+    const changed = () => void refresh();
+    const storageChanged = (event: StorageEvent) => {
+      if (event.key === LOCAL_DATA_KEY || event.key === null) changed();
     };
-  }, [client, enabled, refresh]);
-
-  useEffect(() => {
-    publishSharedData(snapshot);
-  }, [snapshot]);
-
+    const eventName = cloudSession ? CLOUD_DATA_EVENT : LOCAL_DATA_EVENT;
+    window.addEventListener(eventName, changed);
+    if (!cloudSession) window.addEventListener("storage", storageChanged);
+    const unsubscribe = subscribeSharedDataRefresh(refresh);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(eventName, changed);
+      window.removeEventListener("storage", storageChanged);
+    };
+  }, [refresh]);
   return { error, refresh, snapshot };
 }

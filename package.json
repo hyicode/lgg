@@ -9,10 +9,15 @@
     "collector": "go -C collector-go run .",
     "test": "node --experimental-strip-types tests/run-tests.mjs",
     "validate": "node scripts/validate-site.mjs",
-    "check": "pnpm validate && pnpm test && pnpm build"
+    "check": "pnpm validate && pnpm test && pnpm check:worker && pnpm build",
+    "check:worker": "tsc -p cloudflare/tsconfig.json",
+    "d1:dev": "wrangler dev --config cloudflare/wrangler.jsonc",
+    "d1:deploy": "wrangler deploy --config cloudflare/wrangler.jsonc",
+    "d1:migrate:local": "wrangler d1 migrations apply lgg --local --config cloudflare/wrangler.jsonc",
+    "d1:migrate:remote": "wrangler d1 migrations apply lgg --remote --config cloudflare/wrangler.jsonc"
   },
   "version": "1.0.0",
-  "description": "基于 GitHub Pages、Supabase Auth 和 PostgreSQL 的英雄联盟内部 PVP 天命编排与多人共享战绩工具。",
+  "description": "支持游客本地缓存与 Cloudflare D1 共享数据的英雄联盟内部 PVP 天命编排工具。",
   "main": "index.js",
   "directories": {
     "test": "tests"
@@ -40,6 +45,7 @@
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.2",
     "typescript": "^5.9.2",
-    "vite": "^7.1.4"
+    "vite": "^7.1.4",
+    "wrangler": "^4.167.0"
   }
 }

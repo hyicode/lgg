@@ -11,7 +11,7 @@ import {
   normalizeClientTeam,
   riotIdFromClientPlayer,
 } from "../domain/collector";
-import { getSupabaseClient } from "../services/supabaseClient";
+import { getDataClient, getModeStorage } from "../auth/cloudSession";
 import { subscribeActiveView } from "../navigation/viewState";
 import {
   requestSharedDataRefresh,
@@ -28,6 +28,8 @@ import {
 import { pinyin } from "pinyin-pro";
 
 const $ = (selector) => document.querySelector(selector);
+// Preserve existing guest keys; cloud drafts/mappings use a separate namespace.
+const localStorage = getModeStorage();
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const LANES = [
   ["top", "上单", "TOP"],
@@ -51,7 +53,7 @@ const RULE_MODES = {
 };
 
 const state = {
-  supabase: getSupabaseClient(),
+  store: getDataClient(),
   user: null,
   member: null,
   players: [],
@@ -617,7 +619,7 @@ function toast(message, duration = 3600) {
 }
 
 function isAdmin() {
-  return state.member?.role === "admin";
+  return state.member?.role === "guest" || state.member?.role === "admin";
 }
 
 function activePlayers() {
@@ -921,7 +923,7 @@ function syncPlayerInput(input, updateCost = true) {
   const player = playerByName(input.value);
   const previousId = input.dataset.playerId || "";
   input.dataset.playerId = player?.id || "";
-  input.setCustomValidity(input.value && !player ? "请从共享选手库中选择" : "");
+  input.setCustomValidity(input.value && !player ? "请从当前选手库中选择" : "");
   if (player && updateCost && previousId !== player.id) {
     const costInput = input.closest(".player-row")?.querySelector(".cost-input");
     if (costInput) costInput.value = formatNumber(player.defaultCost);
@@ -2857,7 +2859,7 @@ async function submitMatch(event) {
     button.disabled = true;
     button.textContent = "提交中...";
     error.textContent = "";
-    const { error: insertError } = await state.supabase.from("matches").insert(payload);
+    const { error: insertError } = await state.store.from("matches").insert(payload);
     if (insertError) throw insertError;
     confirmedMappings.forEach(({ playerId, accountName }) => saveBidirectionalMapping(playerId, accountName));
     state.submitted = true;
@@ -2867,11 +2869,11 @@ async function submitMatch(event) {
     $("#rerollPlayersBtn").classList.add("hidden");
     $$(".reroll").forEach((item) => { item.disabled = true; });
     const cycleComplete = commitGlobalBpResults(snapshot);
-    toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已写入共享战绩。");
+    toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已保存到当前模式的战绩。");
     maybeAdvanceBatchImport();
   } catch (caught) {
     const existing = state.draftId
-      ? await state.supabase.from("matches").select("id").eq("id", state.draftId).maybeSingle()
+      ? await state.store.from("matches").select("id").eq("id", state.draftId).maybeSingle()
       : { data: null };
     if (existing.data?.id) {
       confirmedMappings.forEach(({ playerId, accountName }) => saveBidirectionalMapping(playerId, accountName));
@@ -2884,7 +2886,7 @@ async function submitMatch(event) {
       toast(cycleComplete ? "比赛已记录；全局 BP 完成 5 轮并已自动重置。" : "比赛已成功记录。");
       maybeAdvanceBatchImport();
     } else {
-      error.textContent = caught.message || "提交失败，请检查网络后重试。";
+      error.textContent = caught.message || "保存失败，请检查浏览器存储后重试。";
     }
   } finally {
     button.disabled = false;
@@ -3001,8 +3003,8 @@ async function fetchRecentGameById(event) {
 // ---- 批量录入（队列模式）----
 
 async function checkGameIdExists(gameId) {
-  if (!gameId || !state.supabase) return false;
-  const { data, error } = await state.supabase
+  if (!gameId || !state.store) return false;
+  const { data, error } = await state.store
     .from("matches")
     .select("id")
     .eq("game_id", gameId)
@@ -3650,7 +3652,7 @@ async function batchUpdatePlayers(changes, actionLabel) {
   state.adminBatchBusy = true;
   renderAdmin();
   try {
-    const { error } = await state.supabase.from("players").update(changes).in("id", ids);
+    const { error } = await state.store.from("players").update(changes).in("id", ids);
     if (error) throw error;
     await requestSharedDataRefresh();
     state.adminSelectedPlayers.clear();
@@ -3681,7 +3683,7 @@ async function batchDeleteMatches() {
   state.adminBatchBusy = true;
   renderAdmin();
   try {
-    const { error } = await state.supabase.from("matches").delete().in("id", ids);
+    const { error } = await state.store.from("matches").delete().in("id", ids);
     if (error) throw error;
     await requestSharedDataRefresh();
     state.adminSelectedMatches.clear();
@@ -3705,30 +3707,33 @@ async function reconcilePlayerStats() {
   status.textContent = `正在复核 ${state.matches.length} 场正式对局；借号按实际参赛选手归属，不按 Riot 账号归属。`;
 
   try {
-    let { data, error } = await state.supabase.rpc("admin_reconcile_player_stats");
-    let compatibilityMode = false;
-    if (error && (error.code === "PGRST202" || /admin_reconcile_player_stats/i.test(error.message || ""))) {
-      const fallback = await state.supabase.rpc("recalc_player_stats");
-      data = fallback.data;
-      error = fallback.error;
-      compatibilityMode = !error;
-    }
-    if (error) throw error;
     await requestSharedDataRefresh();
     const after = comparePlayerStats(state.matches, state.playerStats);
-    const result = data || {};
     const corrected = before.discrepancies.length;
-    const invalid = Number(result.invalid_participants) || 0;
-    const duplicates = Number(result.duplicate_assignments) || 0;
-    const borrowed = Number(result.borrowed_accounts) || 0;
+    const playerIds = new Set(state.players.map(player => player.id));
+    let invalid = 0;
+    let duplicates = 0;
+    const accountPlayers = new Map();
+    for (const match of state.matches) {
+      const seen = new Set();
+      for (const participant of match.participants || []) {
+        if (!playerIds.has(participant.playerId)) { invalid++; continue; }
+        if (seen.has(participant.playerId)) duplicates++;
+        seen.add(participant.playerId);
+        const account = participant.riotAccountId || normalizeName(participant.accountName || "");
+        if (account) {
+          if (!accountPlayers.has(account)) accountPlayers.set(account, new Set());
+          accountPlayers.get(account).add(participant.playerId);
+        }
+      }
+    }
+    const borrowed = [...accountPlayers.values()].filter(players => players.size > 1).length;
     const hasWarnings = invalid > 0 || duplicates > 0 || after.discrepancies.length > 0;
     const summary = [
-      `已复核 ${Number(result.match_count) || state.matches.length} 场对局`,
-      `${Number(result.player_count) || after.expected.size} 名实际选手`,
+      `已复核 ${state.matches.length} 场对局`,
+      `${after.expected.size} 名实际选手`,
       corrected ? `修正 ${corrected} 名选手的汇总` : "汇总无需修正",
-      compatibilityMode
-        ? "借号仍按实际选手归属；更新数据库脚本后可显示借号明细"
-        : borrowed
+      borrowed
           ? `识别 ${borrowed} 个借号账号（已分别归属实际选手）`
           : "未发现借号账号",
     ];
@@ -3741,7 +3746,7 @@ async function reconcilePlayerStats() {
     toast(hasWarnings ? "数据校对完成，但仍有记录需要人工检查。" : "战绩数据校对完成。");
   } catch (error) {
     status.classList.add("warning");
-    status.textContent = `校对失败：${error.message}。若数据库尚未更新，请先执行最新版 supabase/schema.sql。`;
+    status.textContent = `校对失败：${error.message}。请导出当前模式的备份检查记录。`;
     toast("战绩数据校对失败。");
   } finally {
     button.disabled = false;
@@ -3758,7 +3763,7 @@ async function addPlayer(event) {
   if (!name || name.length > 24 || !Number.isFinite(defaultCost) || defaultCost < 0) return toast("请填写有效的选手名称和费用。");
   if (state.players.some((player) => player.normalizedName === normalizedName)) return toast("选手名称已经存在。");
   try {
-    const { error } = await state.supabase.from("players").insert({
+    const { error } = await state.store.from("players").insert({
       display_name: name,
       normalized_name: normalizedName,
       default_cost: defaultCost,
@@ -3767,7 +3772,7 @@ async function addPlayer(event) {
     if (error) throw error;
     $("#playerForm").reset();
     $("#playerCost").value = "1";
-    toast("选手已加入共享选手库。");
+    toast("选手已加入当前选手库。");
   } catch (error) {
     toast(`新增失败：${error.message}`);
   }
@@ -3786,7 +3791,7 @@ async function editPlayer(id) {
   if (!Number.isFinite(defaultCost) || defaultCost < 0) return toast("默认费用无效。");
   if (state.players.some((item) => item.id !== id && item.normalizedName === normalizedName)) return toast("选手名称已经存在。");
   try {
-    const { error } = await state.supabase.from("players").update({
+    const { error } = await state.store.from("players").update({
       display_name: displayName,
       normalized_name: normalizedName,
       default_cost: defaultCost,
@@ -3803,7 +3808,7 @@ async function togglePlayer(id) {
   const player = playerById(id);
   if (!player) return;
   try {
-    const { error } = await state.supabase.from("players").update({ active: !player.active }).eq("id", id);
+    const { error } = await state.store.from("players").update({ active: !player.active }).eq("id", id);
     if (error) throw error;
     toast(player.active ? "选手已停用。" : "选手已重新启用。");
   } catch (error) {
@@ -3834,7 +3839,7 @@ async function saveMatchEdit(event) {
     const playedAt = new Date($("#editPlayedAt").value);
     if (!winner || Number.isNaN(playedAt.getTime())) throw new Error("请完整填写胜方和比赛时间。");
     button.disabled = true;
-    const { error: updateError } = await state.supabase.from("matches").update({
+    const { error: updateError } = await state.store.from("matches").update({
       winner,
       played_at: playedAt.toISOString(),
       note: $("#editMatchNote").value.trim(),
@@ -3854,7 +3859,7 @@ async function deleteMatch(id) {
   const match = state.matches.find((item) => item.id === id);
   if (!match || !confirm(`确定删除 ${match.blueTeam} vs ${match.redTeam} 的记录吗？此操作无法撤销。`)) return;
   try {
-    const { error } = await state.supabase.from("matches").delete().eq("id", id);
+    const { error } = await state.store.from("matches").delete().eq("id", id);
     if (error) throw error;
     toast("比赛记录已删除。");
   } catch (error) {
@@ -3883,7 +3888,7 @@ function normalizeStoredParticipantPosition(participant) {
 
 // 按需加载某场对局的 participants 详情
 async function fetchMatchDetail(matchId) {
-  const { data, error } = await state.supabase
+  const { data, error } = await state.store
     .from("matches")
     .select("participants")
     .eq("id", matchId)
@@ -3915,27 +3920,27 @@ async function ensureRiotAccounts(participants) {
   if (!accounts.length) return;
 
   const normalizedNames = accounts.map((account) => account.normalized_name);
-  const { data: existing, error: readError } = await state.supabase
+  const { data: existing, error: readError } = await state.store
     .from("riot_accounts")
     .select("id, account_name, normalized_name")
     .in("normalized_name", normalizedNames);
-  if (readError) return;
+  if (readError) throw readError;
 
   const existingNames = new Set((existing || []).map((row) => row.normalized_name));
   const missing = accounts.filter((account) => !existingNames.has(account.normalized_name));
   let inserted = [];
   if (missing.length) {
-    const { data, error } = await state.supabase
+    const { data, error } = await state.store
       .from("riot_accounts")
       .insert(missing)
       .select("id, account_name, normalized_name");
     if (error) {
       // 并发提交可能已经插入同名账号；重新读取即可，绝不更新已落库记录。
-      const retry = await state.supabase
+      const retry = await state.store
         .from("riot_accounts")
         .select("id, account_name, normalized_name")
         .in("normalized_name", normalizedNames);
-      if (retry.error) return;
+      if (retry.error) throw retry.error;
       inserted = retry.data || [];
     } else {
       inserted = data || [];
@@ -3957,12 +3962,7 @@ async function ensureRiotAccounts(participants) {
   }
 }
 
-/*
- * 公共账号的共享数据写入路径必须保持 insert-only：
- * - matches 使用 insert 创建正式对局；
- * - riot_accounts 只插入尚不存在的账号；
- * - 已落库内容的 update/delete 只存在于管理员操作中。
- */
+// 游客只能操作当前浏览器的本地记录；所有保存均不连接云端。
 
 // resolveParticipantAccounts 将 participants 中的 riotAccountId 解析为 accountName（用于展示）
 function resolveParticipantAccounts(participants) {
@@ -3997,19 +3997,10 @@ function syncSharedData(snapshot) {
 }
 
 function syncAuthState(snapshot) {
-  if (snapshot.status !== "authenticated") {
-    state.user = null;
-    state.member = null;
-    state.testDataEnabled = false;
-    return;
-  }
-
-  const sameUser = state.user?.id === snapshot.user.id;
-  state.user = snapshot.user;
+  if (snapshot.status !== "guest" && snapshot.status !== "authenticated") return;
+  const firstVisit = !state.member;
   state.member = snapshot.member;
-  if (!sameUser) {
-    loadPools();
-  }
+  if (firstVisit) loadPools();
 }
 
 function syncActiveView(viewId) {

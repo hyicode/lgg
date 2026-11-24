@@ -1,6 +1,6 @@
 // Publishable key 仅用于浏览器客户端；真正的数据权限由 Supabase RLS 控制。
 export const supabaseConfig = {
-  enabled: true,
+  enabled: false,
   url: "https://gsswdsuiytprekjgrjqs.supabase.co",
   publishableKey: "sb_publishable_zD_WvoOpt1m19PxPifK1jg_92z8Xabg",
 } as const;
