@@ -1,6 +1,5 @@
 import type { MemberProfile } from "../auth/authState";
 import type { ViewId } from "../navigation/viewState";
-import { LocalBackupControls } from "./LocalBackupControls";
 import { CloudLogin } from "./CloudLogin";
 
 interface AppHeaderProps {
@@ -37,8 +36,9 @@ export function AppHeader({ activeView, member, onNavigate }: AppHeaderProps) {
         </div>
         <div className="account-box">
           <span id="accountLabel">
-            {member?.role === 'guest' ? '游客 · 本地模式' : `${member?.displayName || '成员'} · 云端模式`}
+            {member?.role === 'guest' ? '游客' : member?.role === 'admin' ? '管理员' : '普通成员'}
           </span>
+          <CloudLogin />
         </div>
       </header>
 
@@ -54,8 +54,6 @@ export function AppHeader({ activeView, member, onNavigate }: AppHeaderProps) {
           </button>
         ))}
       </nav>
-      {member?.role === 'guest' && <LocalBackupControls />}
-      <CloudLogin />
 
       <div className="toolbar">
         <div><span className="status-dot" /><span id="dataStatus">正在加载位置数据…</span></div>

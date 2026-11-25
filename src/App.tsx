@@ -1,5 +1,6 @@
 import type { MouseEvent } from "react";
 import { AppHeader } from "./components/AppHeader";
+import { LocalBackupControls } from "./components/LocalBackupControls";
 import { DateRangeFilters } from "./components/DateRangeFilters";
 import { useAuth } from "./hooks/useAuth";
 import { useAppController } from "./hooks/useAppController";
@@ -164,7 +165,7 @@ function LeaderboardView({ active }: { active: boolean }) {
   );
 }
 
-function AdminView({ active }: { active: boolean }) {
+function AdminView({ active, guest }: { active: boolean; guest: boolean }) {
   return (
     <section className={viewClassName(active)} id="adminView">
       <div className="section-head">
@@ -175,6 +176,7 @@ function AdminView({ active }: { active: boolean }) {
         </div>
       </div>
       <div className="admin-reconcile-status hidden" id="adminReconcileStatus" role="status" aria-live="polite" />
+      {guest && <LocalBackupControls />}
       <div className="admin-grid">
         <section className="panel">
           <h3>选手库</h3>
@@ -245,7 +247,7 @@ function MainApplication({
       <RollView active={activeView === "rollView"} />
       <HistoryView active={activeView === "historyView"} />
       <LeaderboardView active={activeView === "leaderboardView"} />
-      <AdminView active={activeView === "adminView"} />
+      <AdminView active={activeView === "adminView"} guest={member?.role === 'guest'} />
     </main>
   );
 }
