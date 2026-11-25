@@ -60,12 +60,13 @@ function mapMatch(row: Record<string, unknown>): Match {
 }
 
 export function useSharedData(enabled: boolean) {
+  const [client] = useState(getDataClient);
   const [snapshot, setSnapshot] = useState<SharedDataSnapshot>(emptySharedData);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     if (!enabled) return;
     try {
-      const { tables } = validateBackup(await getDataClient().readBackup());
+      const { tables } = validateBackup(await client.readBackup());
       const riotAccounts = new Map(tables.riot_accounts.map(row => [String(row.id), String(row.account_name)]));
       const matches = tables.matches.map(mapMatch).sort((a, b) => b.playedAt.localeCompare(a.playedAt));
       matches.forEach(match => match.participants?.forEach(participant => {
@@ -83,7 +84,7 @@ export function useSharedData(enabled: boolean) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "数据读取失败。");
     }
-  }, [enabled]);
+  }, [enabled, client]);
   useEffect(() => {
     void refresh();
     const changed = () => void refresh();

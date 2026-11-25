@@ -43,7 +43,7 @@ export function LocalBackupControls() {
   }
   return (
     <section className="local-backup-panel" aria-label="本地数据备份">
-      <p>游客模式 · 数据仅保存在当前浏览器，不自动同步。清理浏览器数据前请导出备份。</p>
+      <p>游客修改仅保存在当前浏览器；登录后会被数据库数据覆盖。清理缓存前可先导出备份。</p>
       <div className="toolbar-actions">
         <button className="mini" type="button" onClick={exportData} disabled={busy}>导出数据</button>
         <button className="mini" type="button" onClick={() => input.current?.click()} disabled={busy}>{busy ? "导入中…" : "导入数据"}</button>

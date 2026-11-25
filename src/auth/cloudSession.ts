@@ -24,6 +24,8 @@ export async function loginCloud(token: string, role: 'admin' | 'member') {
   const result = await cloudRequest(session, '/api/session');
   if (!['admin', 'member'].includes(result.role)) throw new Error('云端身份响应无效。');
   session.role = result.role;
+  // Do not enter cloud mode until its authoritative snapshot is cached locally.
+  await createDataAccess(session, localStorage).readBackup();
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, expiresAt: Date.now() + 12 * 3600000 }));
   window.location.reload();
 }
